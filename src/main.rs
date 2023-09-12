@@ -3,6 +3,7 @@ use std::io::BufReader;
 use std::io::prelude::*;
 use std::str;
 use std::io;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone,Copy,PartialEq, Eq)]
 enum Format {
@@ -14,6 +15,10 @@ enum Format {
 #[derive(Debug, Clone,Copy,PartialEq, Eq)]
 enum Key {
     C = 0, CS, D, DS, E, F, FS, G, GS, A, AS, B, KEY_COUNT
+}
+
+fn key_index(key: Key, octave: i8) -> usize {
+    (octave + 1) as usize * 12 + key as usize
 }
 
 impl TryFrom<u8> for Key {
@@ -44,7 +49,7 @@ enum Division {
     TicksPerFrame(u32,u32) // (FPS,ticks per frame)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum MetaEvent {
     SequenceTrackName { text: String },
     SetTempo { tempo: u32 },
@@ -84,7 +89,7 @@ enum ControllerMessage {
     DataEntryMSB(u8),
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 enum MidiEvent {
     ControlChange(ControllerMessage),
     ProgramChange(Program),
@@ -94,14 +99,26 @@ enum MidiEvent {
 }
 
 #[derive(Debug)]
+struct HeaderChunk {
+    format: Format,
+    ntrks: u32,
+    division: Division
+}
+
+#[derive(Debug)]
+struct TrackChunk { 
+    events: Vec<(u32, Event)>
+}
+
+#[derive(Debug)]
 enum Chunk {
-    Header { format: Format, ntrks: u32, division: Division },
-    Track { events: Vec<(u32, Event)> },
+    Header(HeaderChunk),
+    Track(TrackChunk),
     Unknown,
     None
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 enum Event {
     Midi(u8,MidiEvent),
     Sysex,
@@ -330,7 +347,7 @@ fn read_chunk(reader: &mut impl Read) -> Chunk {
                 Division::TicksPerFrame((-frame_rate) as u32, ticks_per_frame as u32)
             };
 
-            Chunk::Header { format, ntrks, division }
+            Chunk::Header(HeaderChunk { format, ntrks, division })
         },
         Some(s) if s == "MTrk"=> {
             println!("TRACK CHUNK!");
@@ -341,7 +358,7 @@ fn read_chunk(reader: &mut impl Read) -> Chunk {
             while let Some(event) = read_event(&mut track_reader) {
                 events.push(event);
             }
-            Chunk::Track { events }
+            Chunk::Track(TrackChunk { events } )
         },
         Some(_) | None => {
             println!("WARNING: Unkown chunk type");
@@ -353,21 +370,21 @@ fn read_chunk(reader: &mut impl Read) -> Chunk {
 }
 
 struct MidiFile {
-    header: Chunk,
-    tracks: Vec<Chunk>
+    header: HeaderChunk,
+    tracks: Vec<TrackChunk>,
 }
 
 impl MidiFile {
     fn read_midi(file_path: &str) -> io::Result<Self> {
         let mut file = File::open(file_path).unwrap();
-        let header = read_chunk(&mut file);
-        if let Chunk::Header {  ntrks , ..} = header {
+        let header_chunk = read_chunk(&mut file);
+        if let Chunk::Header(header) = header_chunk {
             println!("{:?}", header);
             let mut tracks = vec![];
-            for _ in 0..ntrks {
+            for _ in 0..header.ntrks {
                 let next_chunk = read_chunk(&mut file);
-                if let Chunk::Track { .. } = next_chunk {
-                    tracks.push(next_chunk);
+                if let Chunk::Track(track) = next_chunk {
+                    tracks.push(track);
                 }
             }
             Ok(Self { header, tracks })
@@ -429,27 +446,112 @@ fn draw_keyboard(d: &mut impl RaylibDraw, bounds: Rectangle, key_map: [bool;128]
     }
 }
 
+fn get_ticks_per_frame(fps: u32, tempo: u32, ticks_per_quarter: u32) -> u32 { // TEMPO IN USECS
+    (ticks_per_quarter as f32 / (tempo as f32 * 1.0e-6) / (fps as f32)) as u32
+}
+
+fn get_tick_time(ticks: u32, tempo: u32, ticks_per_quarter: u32) -> u32 {
+    tempo * ticks / ticks_per_quarter
+}
+
 fn main() -> std::io::Result<()> {
     let file =  MidiFile::read_midi("Never-Gonna-Give-You-Up-3.mid")?;
-    
+    assert!(file.header.format == Format::SINGLE_TRACK);
+
     const WINDOW_WIDTH: i32 = 1920;
     const WINDOW_HEIGHT: i32 = 1080;
+    const FPS: u32 = 60;
 
     set_trace_log(TraceLogLevel::LOG_NONE);
     let (mut rl, thread) = raylib::init().width(WINDOW_WIDTH).height(WINDOW_HEIGHT).title("Mididi").build();
     rl.set_exit_key(None);
+    rl.set_target_fps(FPS);
     
+    const STANDARD_TEMPO: u32 = 500_000;
+    let mut tempo = STANDARD_TEMPO;
+    for (_,event) in file.tracks[0].events.iter() {
+        if let Event::Meta(MetaEvent::SetTempo { tempo: t }) = event {
+            tempo = *t;
+            break;
+        }
+    }
 
+    //let mut ticks_per_frame = if let Division::TicksPerQuarter(ticks) = file.header.division {
+    //    get_ticks_per_frame(FPS, tempo, ticks)
+    //} else {
+    //    todo!("Other divisions")
+    //};
+    let ticks_per_quarter = if let Division::TicksPerQuarter(ticks) = file.header.division {
+        ticks
+    } else {
+        todo!("Other divisions")
+    };
+
+    let mut event_pointer: usize = 0;
+    let mut dt_counter: u32 = 0;
+
+    
     let mut key_map  = [false; 128];
-    key_map[60] = true;
-    key_map[63] = true;
-    key_map[67] = true;
+    //key_map[60] = true;
+    //key_map[63] = true;
+    //key_map[67] = true;
+
+    //let mut event_queue = VecDeque::<Event>::new();
+    //let mut queue_timer = 0;
+    //let queue_pop_time = 1;
+
     while !rl.window_should_close() {
+        //queue_timer += 30;
+        //if queue_timer > queue_pop_time && event_queue.len() > 0 {
+        //    event_queue.pop_back();
+        //    queue_timer = 0;
+        //}
+        const LISTEN_CHANNEL: u8 = 3;
+        dt_counter += (rl.get_frame_time() * 1.0e6) as u32;
+        while event_pointer < file.tracks[0].events.len() {
+            let (dt, event) = &file.tracks[0].events[event_pointer];
+            let dt_time = get_tick_time(*dt, tempo, ticks_per_quarter);
+            if dt_counter < dt_time { break; }
+            match *event {
+                Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
+                    tempo = t;
+                },
+                Event::Midi(channel,MidiEvent::ProgramChange(program)) => {
+                    if channel == LISTEN_CHANNEL {
+                        println!("Program for channel {}: {:?}", channel, program);
+                    }
+                }
+                Event::Midi(channel,MidiEvent::NoteOn { octave, key, ..}) => {
+                    let index = key_index(key, octave);
+                    if channel == LISTEN_CHANNEL {
+                        key_map[index] = true;
+                      // println!("HHHHHHSDHFSDFSD?????");
+                    }
+                }
+                Event::Midi(channel,MidiEvent::NoteOff { octave, key, ..}) => {
+                    let index = key_index(key, octave);
+                    if channel == LISTEN_CHANNEL {
+                        key_map[index] = false;
+                    }
+                }
+                _ => {}
+            }
+            
+            
+            //event_queue.push_front(event.clone());
+            dt_counter -= dt_time;
+            event_pointer += 1;
+        }
+        //dt_counter = 0;
+
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(Color::BLACK);
         d.draw_text("Hello World", 23, 23, 23, Color::RAYWHITE);
         let key_board_bounds = Rectangle::new(0.0, WINDOW_HEIGHT as f32 * 7.0/8.0, WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32 / 8.0);
         draw_keyboard(&mut d, key_board_bounds, key_map);
+        //for (i,event) in event_queue.iter().enumerate() {
+        //    d.draw_text(&format!("{:?}", event), 23, 23 + i as i32 * 40, 23, Color::WHITE);
+        //}
     }
 
     Ok(())
