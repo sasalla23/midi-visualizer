@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 raylib="3.5.0"
+hound = "3.5.0"

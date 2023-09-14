@@ -393,6 +393,135 @@ impl MidiFile {
         }
     }
 }
+const NOTE_FREQUENCIES: [f64;128] = [8.175798915643682, 
+    8.661957218027228,
+    9.17702399741896,
+    9.722718241315002,
+    10.300861153527157,
+    10.913382232281341,
+    11.562325709738543,
+    12.249857374429633,
+    12.978271799373253,
+    13.749999999999964,
+    14.567617547440275,
+    15.43385316425384,
+    16.351597831287375,
+    17.323914436054462,
+    18.35404799483793,
+    19.44543648263001,
+    20.601722307054324,
+    21.826764464562697,
+    23.1246514194771,
+    24.49971474885928,
+    25.956543598746517,
+    27.499999999999947,
+    29.13523509488056,
+    30.867706328507698,
+    32.703195662574764,
+    34.647828872108946,
+    36.708095989675876,
+    38.890872965260044,
+    41.20344461410867,
+    43.65352892912541,
+    46.24930283895422,
+    48.99942949771858,
+    51.913087197493056,
+    54.999999999999915,
+    58.270470189761156,
+    61.73541265701542,
+    65.40639132514957,
+    69.29565774421793,
+    73.4161919793518,
+    77.78174593052012,
+    82.40688922821738,
+    87.30705785825087,
+    92.4986056779085,
+    97.99885899543722,
+    103.82617439498618,
+    109.99999999999989,
+    116.54094037952237,
+    123.4708253140309,
+    130.8127826502992,
+    138.59131548843592,
+    146.83238395870364,
+    155.56349186104035,
+    164.81377845643485,
+    174.61411571650183,
+    184.9972113558171,
+    195.99771799087452,
+    207.65234878997245,
+    219.9999999999999,
+    233.08188075904488,
+    246.94165062806198,
+    261.6255653005985,
+    277.182630976872,
+    293.66476791740746,
+    311.1269837220808,
+    329.62755691286986,
+    349.2282314330038,
+    369.99442271163434,
+    391.99543598174927,
+    415.3046975799451,
+    440.0,
+    466.1637615180899,
+    493.8833012561241,
+    523.2511306011974,
+    554.3652619537443,
+    587.3295358348153,
+    622.253967444162,
+    659.2551138257401,
+    698.456462866008,
+    739.988845423269,
+    783.990871963499,
+    830.6093951598907,
+    880.0000000000003,
+    932.3275230361803,
+    987.7666025122488,
+    1046.5022612023952,
+    1108.7305239074892,
+    1174.659071669631,
+    1244.5079348883246,
+    1318.5102276514808,
+    1396.912925732017,
+    1479.977690846539,
+    1567.9817439269987,
+    1661.218790319782,
+    1760.000000000002,
+    1864.6550460723618,
+    1975.5332050244986,
+    2093.0045224047913,
+    2217.4610478149793,
+    2349.3181433392633,
+    2489.0158697766506,
+    2637.020455302963,
+    2793.8258514640347,
+    2959.9553816930793,
+    3135.963487853999,
+    3322.437580639566,
+    3520.0000000000055,
+    3729.310092144725,
+    3951.0664100489994,
+    4186.009044809585,
+    4434.922095629961,
+    4698.636286678529,
+    4978.031739553304,
+    5274.040910605929,
+    5587.651702928073,
+    5919.910763386162,
+    6271.926975708001,
+    6644.875161279136,
+    7040.000000000014,
+    7458.620184289454,
+    7902.132820098003,
+    8372.018089619174,
+    8869.844191259926,
+    9397.272573357064,
+    9956.063479106611,
+    10548.081821211863,
+    11175.303405856152,
+    11839.82152677233,
+    12543.853951416007,
+];
 
 use raylib::prelude::*;
 use raylib::core::logging::set_trace_log;
@@ -454,20 +583,111 @@ fn get_tick_time(ticks: u32, tempo: u32, ticks_per_quarter: u32) -> u32 {
     tempo * ticks / ticks_per_quarter
 }
 
-fn main() -> std::io::Result<()> {
-    let file =  MidiFile::read_midi("Never-Gonna-Give-You-Up-3.mid")?;
+
+
+use hound;
+use std::f64::consts::PI;
+use std::i16;
+
+const STANDARD_TEMPO: u32 = 500_000;
+
+fn generate_audio(file: &MidiFile, channel: u8, wav_file_path: &str) {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 44100,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int
+    };
+    let mut writer = hound::WavWriter::create(wav_file_path, spec).unwrap();
+    //for t in (0 .. 44100).map(|x| x as f32 / 44100.0) {
+    //    let sample = (t * 440.0 * 2.0 * PI).sin();
+    //    let amplitude = i16::MAX as f32;
+    //    writer.write_sample((sample * amplitude) as i16).unwrap();
+    //}
+    let mut tempo = STANDARD_TEMPO;
+    let mut usec_per_tick = if let Division::TicksPerQuarter(ticks) = file.header.division {
+        tempo / ticks
+    } else {
+        todo!("Other divisions")
+    };
+
     assert!(file.header.format == Format::SINGLE_TRACK);
 
-    const WINDOW_WIDTH: i32 = 1920;
-    const WINDOW_HEIGHT: i32 = 1080;
+    let mut key_map: [Option<f64>;127] = [None; 127];
+
+    for (dt,event) in file.tracks[0].events.iter() {
+        let elapsing_samples = usec_per_tick as u64 * *dt as u64 * spec.sample_rate as u64 / 1_000_000;
+        let sec_per_sample = 1.0 / spec.sample_rate as f64;
+        
+        for sample in 0..elapsing_samples {
+            let mut s = 0.0;
+            let mut pressed_keys = 0;
+            for (i,key_time) in key_map.iter_mut().enumerate() {
+                if let Some(t) = key_time {
+                    s += (*t * NOTE_FREQUENCIES[i] * 2.0 * PI).sin();
+                    *t += sec_per_sample;
+                }
+                pressed_keys += 1;
+            }
+            s /= pressed_keys as f64;
+            writer.write_sample((i16::MAX as f64 * s) as i16).unwrap();
+        }
+
+        match event {
+            Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
+                tempo = *t;
+                usec_per_tick = if let Division::TicksPerQuarter(ticks) = file.header.division {
+                    tempo / ticks
+                } else {
+                    todo!("Other divisions")
+                };
+            },
+            Event::Midi(c,MidiEvent::NoteOn { octave, key, ..}) => {
+                let index = key_index(*key, *octave);
+                if *c == channel {
+                    key_map[index] = Some(0.0);
+                  // println!("HHHHHHSDHFSDFSD?????");
+                }
+            }
+            Event::Midi(c,MidiEvent::NoteOff { octave, key, ..}) => {
+                let index = key_index(*key, *octave);
+                if *c == channel {
+                    key_map[index] = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    writer.finalize().unwrap();
+}
+
+
+use raylib::core::audio::Music;
+use raylib::core::audio::RaylibAudio;
+
+const LISTEN_CHANNEL: u8 = 15;
+
+fn main() -> std::io::Result<()> {
+    let file =  MidiFile::read_midi("Never-Gonna-Give-You-Up-3.mid")?;
+    let wav_file_path = "test.wav";
+    generate_audio(&file, LISTEN_CHANNEL, wav_file_path);
+    assert!(file.header.format == Format::SINGLE_TRACK);
+
+    const WINDOW_WIDTH: i32 = 2560;
+    const WINDOW_HEIGHT: i32 = 1440;
     const FPS: u32 = 60;
+
 
     set_trace_log(TraceLogLevel::LOG_NONE);
     let (mut rl, thread) = raylib::init().width(WINDOW_WIDTH).height(WINDOW_HEIGHT).title("Mididi").build();
+
+    let mut rl_audio = RaylibAudio::init_audio_device();
+    let mut music = Music::load_music_stream(&thread, wav_file_path).unwrap();
+    
     rl.set_exit_key(None);
     rl.set_target_fps(FPS);
     
-    const STANDARD_TEMPO: u32 = 500_000;
+    
     let mut tempo = STANDARD_TEMPO;
     for (_,event) in file.tracks[0].events.iter() {
         if let Event::Meta(MetaEvent::SetTempo { tempo: t }) = event {
@@ -499,14 +719,16 @@ fn main() -> std::io::Result<()> {
     //let mut event_queue = VecDeque::<Event>::new();
     //let mut queue_timer = 0;
     //let queue_pop_time = 1;
-
+    rl_audio.play_music_stream(&mut music);
+    rl_audio.set_music_volume(&mut music, 1.0);
     while !rl.window_should_close() {
         //queue_timer += 30;
         //if queue_timer > queue_pop_time && event_queue.len() > 0 {
         //    event_queue.pop_back();
         //    queue_timer = 0;
         //}
-        const LISTEN_CHANNEL: u8 = 3;
+        rl_audio.update_music_stream(&mut music);
+        
         dt_counter += (rl.get_frame_time() * 1.0e6) as u32;
         while event_pointer < file.tracks[0].events.len() {
             let (dt, event) = &file.tracks[0].events[event_pointer];
@@ -546,7 +768,7 @@ fn main() -> std::io::Result<()> {
 
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(Color::BLACK);
-        d.draw_text("Hello World", 23, 23, 23, Color::RAYWHITE);
+        //d.draw_text("Hello World", 23, 23, 23, Color::RAYWHITE);
         let key_board_bounds = Rectangle::new(0.0, WINDOW_HEIGHT as f32 * 7.0/8.0, WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32 / 8.0);
         draw_keyboard(&mut d, key_board_bounds, key_map);
         //for (i,event) in event_queue.iter().enumerate() {
