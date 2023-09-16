@@ -87,6 +87,7 @@ enum ControllerMessage {
     RegisteredParameterNumberMSB(u8),
     RegisteredParameterNumberLSB(u8),
     DataEntryMSB(u8),
+    DamperPedalOn(bool)
 }
 
 #[derive(Debug,Clone)]
@@ -226,6 +227,7 @@ fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
                         0x65 => ControllerMessage::RegisteredParameterNumberMSB(control_change_data[1]),
                         0x64 => ControllerMessage::RegisteredParameterNumberLSB(control_change_data[1]),
                         0x06 => ControllerMessage::DataEntryMSB(control_change_data[1]),
+                        0x40 => ControllerMessage::DamperPedalOn(control_change_data[1] >= 64),
                         _ => todo!("{}", control_change_data[0])
                     })
                 },
@@ -360,6 +362,14 @@ impl MidiFile {
             Ok(Self { header, tracks })
         } else {
             return Err(io::Error::new(io::ErrorKind::Other, "Midi file has to start with header"));
+        }
+    }
+
+    fn get_simult_track_count(&self) -> usize {
+        match self.header.format {
+            Format::SINGLE_TRACK => 1,
+            Format::SIMUL_TRACK => self.header.ntrks as usize,
+            Format::SEQUENCE_TRACK => 1,
         }
     }
 }
@@ -602,6 +612,8 @@ struct PressedKeyInfo {
     key: u8,
 }
 
+const DEFAULT_TRACK: usize = 3;
+
 fn generate_audio(file: &MidiFile, wav_file_path: &str) {
     let spec = hound::WavSpec {
         channels: 1,
@@ -622,66 +634,83 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
         todo!("Other divisions")
     };
 
-    assert!(file.header.format == Format::SINGLE_TRACK);
+    let simult_tracks: usize = file.get_simult_track_count();
 
-    let mut channels = [(Program::AcousticGrandPiano,127);256];
-    let mut pressed_keys = Vec::<PressedKeyInfo>::new();
+    assert!(file.header.format != Format::SEQUENCE_TRACK);
 
-    for (dt,event) in file.tracks[0].events.iter() {
-        let elapsing_samples = usec_per_tick as u64 * *dt as u64 * spec.sample_rate as u64 / 1_000_000;
-        let sec_per_sample = 1.0 / spec.sample_rate as f64;
-        
-        for _ in 0..elapsing_samples {
-            let mut s = 0.0;
-            for key_info in pressed_keys.iter_mut() {
-                
-                    let note_function = match channels[key_info.channel as usize].0 {
-                        //Program::AcousticGrandPiano => note_sine(*t,i),
-                        Program::AltoSax => note_saw_tooth,
-                        Program::StringEnsemble2 => note_square,
-                        Program::BrassSection | Program::SynthDrum | Program::Pad3 => note_drum,
-                        Program::SynthBass2 => note_drum,
-                        _ => note_sine
-                    } ;
-                    s += note_function(key_info.elapsed_time, key_info.key as usize)* channels[key_info.channel as usize].1 as f64 / 127.0;
-                    key_info.elapsed_time += sec_per_sample;
-                
-            }
-            s /= 10.0; //pressed_keys.len() as f64;
-            writer.write_sample((i16::MAX as f64 * s) as i16).unwrap();
-        }
+    let mut sample_buffer = Vec::<i16>::new();
 
-        match event {
-            Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
-                tempo = *t;
-                usec_per_tick = if let Division::TicksPerQuarter(ticks) = file.header.division {
-                    tempo / ticks
-                } else {
-                    todo!("Other divisions")
-                };
-            },
-            Event::Midi(c,MidiEvent::NoteOn { key, ..}) => {
-                //if *c == channel {
-                    pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key });
-                  // println!("HHHHHHSDHFSDFSD?????");
-                //}
-            }
-            Event::Midi(c,MidiEvent::NoteOff { key, .. }) => {
-                for i in 0..pressed_keys.len() {
-                    if pressed_keys[i].channel == *c && pressed_keys[i].key == *key {
-                        pressed_keys.remove(i);
-                        break;
-                    }
+    for track in 0..simult_tracks {
+        let mut channels = [(Program::AcousticGrandPiano,127);256];
+        let mut pressed_keys = Vec::<PressedKeyInfo>::new();
+        let mut sample_pointer = 0;
+
+        for (dt,event) in file.tracks[track].events.iter() {
+            let elapsing_samples = usec_per_tick as u64 * *dt as u64 * spec.sample_rate as u64 / 1_000_000;
+            let sec_per_sample = 1.0 / spec.sample_rate as f64;
+            
+            for _ in 0..elapsing_samples {
+                let mut s = 0.0;
+                for key_info in pressed_keys.iter_mut() {
+                    
+                        let note_function = match channels[key_info.channel as usize].0 {
+                            //Program::AcousticGrandPiano => note_sine(*t,i),
+                            Program::AltoSax => note_saw_tooth,
+                            Program::StringEnsemble2 => note_square,
+                            Program::BrassSection | Program::SynthDrum | Program::Pad3 => note_drum,
+                            Program::SynthBass2 => note_drum,
+                            _ => note_sine
+                        } ;
+                        s += note_function(key_info.elapsed_time, key_info.key as usize)* channels[key_info.channel as usize].1 as f64 / 127.0;
+                        key_info.elapsed_time += sec_per_sample;
+                    
                 }
-            },
-            Event::Midi(c, MidiEvent::ControlChange(ControllerMessage::ChannelVolumeMSB(new_volume))) => {
-                channels[*c as usize].1 = *new_volume;
-            },
-            Event::Midi(c, MidiEvent::ProgramChange(prog)) => {
-                channels[*c as usize].0 = *prog;
+                s /= 10.0; //pressed_keys.len() as f64;
+                //writer.write_sample((i16::MAX as f64 * s) as i16).unwrap();
+                let sample_value = (i16::MAX as f64 * s) as i16;
+                if sample_pointer >= sample_buffer.len() {
+                    sample_buffer.push(sample_value);
+                } else {
+                    sample_buffer[sample_pointer] += sample_value;
+                }
+                sample_pointer += 1;
             }
-            _ => {}
+
+            match event {
+                Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
+                    tempo = *t;
+                    usec_per_tick = if let Division::TicksPerQuarter(ticks) = file.header.division {
+                        tempo / ticks
+                    } else {
+                        todo!("Other divisions")
+                    };
+                },
+                Event::Midi(c,MidiEvent::NoteOn { key, ..}) => {
+                    //if *c == channel {
+                        pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key });
+                      // println!("HHHHHHSDHFSDFSD?????");
+                    //}
+                }
+                Event::Midi(c,MidiEvent::NoteOff { key, .. }) => {
+                    for i in 0..pressed_keys.len() {
+                        if pressed_keys[i].channel == *c && pressed_keys[i].key == *key {
+                            pressed_keys.remove(i);
+                            break;
+                        }
+                    }
+                },
+                Event::Midi(c, MidiEvent::ControlChange(ControllerMessage::ChannelVolumeMSB(new_volume))) => {
+                    channels[*c as usize].1 = *new_volume;
+                },
+                Event::Midi(c, MidiEvent::ProgramChange(prog)) => {
+                    channels[*c as usize].0 = *prog;
+                }
+                _ => {}
+            }
         }
+    }
+    for s in sample_buffer {
+        writer.write_sample(s).unwrap();
     }
     writer.finalize().unwrap();
 }
@@ -703,14 +732,34 @@ const COLORS: [Color; 8] = [
     Color::SKYBLUE
 ];
 
-fn main() -> std::io::Result<()> {
-    let file =  MidiFile::read_midi("Never-Gonna-Give-You-Up-3.mid")?;
-    let wav_file_path = "test.wav";
-    generate_audio(&file, wav_file_path);
-    assert!(file.header.format == Format::SINGLE_TRACK);
+#[derive(Debug,Clone,Copy)]
+struct TrackPlayer {
+    event_pointer: usize,
+    dt_counter: u32,
+}
 
-    const WINDOW_WIDTH: i32 = 2560;
-    const WINDOW_HEIGHT: i32 = 1440;
+impl TrackPlayer {
+    fn new() -> Self {
+        Self { event_pointer: 0, dt_counter: 0 }
+    }
+}
+
+use std::env;
+
+fn main() -> std::io::Result<()> {
+    let args = env::args().collect::<Vec<_>>();
+    if args.len() < 3 {
+        eprintln!("usage: {} [input] [output]", args[0]);
+        return Ok(());
+    }
+
+    let file =  MidiFile::read_midi(&args[1])?;
+    let wav_file_path = args[2].clone();
+    generate_audio(&file, &wav_file_path);
+    assert!(file.header.format != Format::SEQUENCE_TRACK);
+
+    const WINDOW_WIDTH: i32 = 1280;
+    const WINDOW_HEIGHT: i32 = 720;
     const FPS: u32 = 60;
 
 
@@ -718,19 +767,13 @@ fn main() -> std::io::Result<()> {
     let (mut rl, thread) = raylib::init().width(WINDOW_WIDTH).height(WINDOW_HEIGHT).title("Mididi").build();
 
     let mut rl_audio = RaylibAudio::init_audio_device();
-    let mut music = Music::load_music_stream(&thread, wav_file_path).unwrap();
+    let mut music = Music::load_music_stream(&thread, &wav_file_path).unwrap();
     
     rl.set_exit_key(None);
     rl.set_target_fps(FPS);
     
     
     let mut tempo = STANDARD_TEMPO;
-    for (_,event) in file.tracks[0].events.iter() {
-        if let Event::Meta(MetaEvent::SetTempo { tempo: t }) = event {
-            tempo = *t;
-            break;
-        }
-    }
 
     //let mut ticks_per_frame = if let Division::TicksPerQuarter(ticks) = file.header.division {
     //    get_ticks_per_frame(FPS, tempo, ticks)
@@ -742,21 +785,14 @@ fn main() -> std::io::Result<()> {
     } else {
         todo!("Other divisions")
     };
-
-    let mut event_pointer: usize = 0;
-    let mut dt_counter: u32 = 0;
-
+    let simult_tracks = file.get_simult_track_count(); 
+    let mut track_players = vec![TrackPlayer::new(); simult_tracks as usize];
     
     let mut key_map  = [None; 128];
-    //key_map[60] = true;
-    //key_map[63] = true;
-    //key_map[67] = true;
 
-    //let mut event_queue = VecDeque::<Event>::new();
-    //let mut queue_timer = 0;
-    //let queue_pop_time = 1;
     rl_audio.play_music_stream(&mut music);
     rl_audio.set_music_volume(&mut music, 1.0);
+    
     while !rl.window_should_close() {
         //queue_timer += 30;
         //if queue_timer > queue_pop_time && event_queue.len() > 0 {
@@ -764,34 +800,36 @@ fn main() -> std::io::Result<()> {
         //    queue_timer = 0;
         //}
         rl_audio.update_music_stream(&mut music);
-        
-        dt_counter += (rl.get_frame_time() * 1.0e6) as u32;
-        while event_pointer < file.tracks[0].events.len() {
-            let (dt, event) = &file.tracks[0].events[event_pointer];
-            let dt_time = get_tick_time(*dt, tempo, ticks_per_quarter);
-            if dt_counter < dt_time { break; }
-            match *event {
-                Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
-                    tempo = t;
-                },
-                //Event::Midi(channel,MidiEvent::ProgramChange(program)) => {
-                //    //if channel == LISTEN_CHANNEL {
-                //    //    println!("Program for channel {}: {:?}", channel, program);
-                //    //}
-                //}
-                Event::Midi(channel,MidiEvent::NoteOn { key, ..}) => {
-                    key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len() ]);
+        let dt = rl.get_frame_time();
+        for (i,player) in track_players.iter_mut().enumerate() {
+            player.dt_counter += (dt * 1.0e6) as u32;
+            while player.event_pointer < file.tracks[i].events.len() {
+                let (dt, event) = &file.tracks[i].events[player.event_pointer];
+                let dt_time = get_tick_time(*dt, tempo, ticks_per_quarter);
+                if player.dt_counter < dt_time { break; }
+                match *event {
+                    Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
+                        tempo = t;
+                    },
+                    //Event::Midi(channel,MidiEvent::ProgramChange(program)) => {
+                    //    //if channel == LISTEN_CHANNEL {
+                    //    //    println!("Program for channel {}: {:?}", channel, program);
+                    //    //}
+                    //}
+                    Event::Midi(channel,MidiEvent::NoteOn { key, ..}) => {
+                        key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len() ]);
+                    }
+                    Event::Midi(_, MidiEvent::NoteOff { key, ..}) => {
+                        key_map[key as usize] = None;
+                    }
+                    _ => {}
                 }
-                Event::Midi(_, MidiEvent::NoteOff { key, ..}) => {
-                    key_map[key as usize] = None;
-                }
-                _ => {}
+                
+                
+                //event_queue.push_front(event.clone());
+                player.dt_counter -= dt_time;
+                player.event_pointer += 1;
             }
-            
-            
-            //event_queue.push_front(event.clone());
-            dt_counter -= dt_time;
-            event_pointer += 1;
         }
         //dt_counter = 0;
         
