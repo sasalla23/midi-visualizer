@@ -12,36 +12,36 @@ enum Format {
     SEQUENCE_TRACK
 }
 
-#[derive(Debug, Clone,Copy,PartialEq, Eq)]
-enum Key {
-    C = 0, CS, D, DS, E, F, FS, G, GS, A, AS, B, KEY_COUNT
-}
+//#[derive(Debug, Clone,Copy,PartialEq, Eq)]
+//enum Key {
+//    C = 0, CS, D, DS, E, F, FS, G, GS, A, AS, B //, KEY_COUNT
+//}
+//
+//fn key_index(key: Key, octave: i8) -> usize {
+//    (octave + 1) as usize * 12 + key as usize
+//}
 
-fn key_index(key: Key, octave: i8) -> usize {
-    (octave + 1) as usize * 12 + key as usize
-}
-
-impl TryFrom<u8> for Key {
-    type Error = String;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::C),
-            1 => Ok(Self::CS),
-            2 => Ok(Self::D),
-            3 => Ok(Self::DS),
-            4 => Ok(Self::E),
-            5 => Ok(Self::F),
-            6 => Ok(Self::FS),
-            7 => Ok(Self::G),
-            8 => Ok(Self::GS),
-            9 => Ok(Self::A),
-            10 => Ok(Self::AS),
-            11 => Ok(Self::B),
-            _ => Err(String::from("Invalid Value for key"))
-        }
-    }
-}
+//impl TryFrom<u8> for Key {
+//    type Error = String;
+//
+//    fn try_from(value: u8) -> Result<Self, Self::Error> {
+//        match value {
+//            0 => Ok(Self::C),
+//            1 => Ok(Self::CS),
+//            2 => Ok(Self::D),
+//            3 => Ok(Self::DS),
+//            4 => Ok(Self::E),
+//            5 => Ok(Self::F),
+//            6 => Ok(Self::FS),
+//            7 => Ok(Self::G),
+//            8 => Ok(Self::GS),
+//            9 => Ok(Self::A),
+//            10 => Ok(Self::AS),
+//            11 => Ok(Self::B),
+//            _ => Err(String::from("Invalid Value for key"))
+//        }
+//    }
+//}
 
 #[derive(Debug, Clone,Copy,PartialEq,Eq)]
 enum Division {
@@ -94,8 +94,8 @@ enum MidiEvent {
     ControlChange(ControllerMessage),
     ProgramChange(Program),
     PitchWheelChange(u32),
-    NoteOn { octave: i8, key: Key, velocity: u8 },
-    NoteOff { octave: i8, key: Key, velocity: u8 }
+    NoteOn { key: u8, velocity: u8 },
+    NoteOff { key: u8, velocity: u8 }
 }
 
 #[derive(Debug)]
@@ -146,157 +146,127 @@ fn read_vlq(reader: &mut impl Read) -> Option<u32> {
 
 fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
     let dt = read_vlq(reader)?;
-    let mut data = [0];
-    reader.read(&mut data).ok()?;
-    let signal = data[0];
-    //println!("Signal Byte: {:X}", signal);
-    if signal == 0xFF { // META EVENT
+    Some((dt, {
+        let mut data = [0];
         reader.read(&mut data).ok()?;
-        let meta_type = data[0];
-        
-        let length = read_vlq(reader)?; // This should always work though the documentation is unclear
-        //println!("Meta Type: {:X}, Length: {}", meta_type, length);
-        match meta_type {
-            0x03 => { // Sequence/Track Name
-                let mut name_data = vec![0; length as usize];
-                reader.read(&mut name_data[..]).ok()?;
-                let name_str = std::str::from_utf8(&name_data).ok()?;
-                //println!("Track Name: {}", name_str);
-                Some((dt, Event::Meta(MetaEvent::SequenceTrackName { text: name_str.to_string() })))
+        let signal = data[0];
+        if signal == 0xFF { // META EVENT
+            reader.read(&mut data).ok()?;
+            let meta_type = data[0];
+            let length = read_vlq(reader)?; // This should always work though the documentation is unclear
+            Event::Meta(match meta_type {
+                0x03 => { // Sequence/Track Name
+                    let mut name_data = vec![0; length as usize];
+                    reader.read(&mut name_data[..]).ok()?;
+                    let name_str = std::str::from_utf8(&name_data).ok()?;
+                    MetaEvent::SequenceTrackName { text: name_str.to_string() }
 
-            }
-            0x51 => { // Set Tempo
-                assert!(length == 3);
-                let mut tempo_data = vec![0;3];
-                reader.read(&mut tempo_data).ok()?;
-                tempo_data.insert(0,0);
-                let tempo = u32::from_be_bytes(tempo_data.try_into().unwrap());
-                Some((dt, Event::Meta(MetaEvent::SetTempo { tempo })))
-            },
-            0x58 => { // Time Signature
-                assert!(length == 4);
-                let mut time_sig_data = [0;4];
-                reader.read(&mut time_sig_data).ok()?;
-                let denominator = time_sig_data[0];
-                let numerator = 2_u8.pow(time_sig_data[1] as u32);
-                let metronome_clocks = time_sig_data[2];
-                let notated_32s_per_quarter = time_sig_data[3];
-                Some((dt, Event::Meta(MetaEvent::TimeSignature { denominator, numerator, metronome_clocks, notated_32s_per_quarter })))
-            }
-            0x01 => { // Text
-                let mut text_data = vec![0; length as usize];
-                reader.read(&mut text_data[..]).ok()?;
-                let text_str = std::str::from_utf8(&text_data).ok()?;
-                Some((dt, Event::Meta(MetaEvent::Text { text: text_str.to_string() })))
-            }
-            _ => {
-                let mut unknown_data = vec![0; length as usize];
-                reader.read(&mut unknown_data).ok()?;
-                Some((dt,Event::Meta(MetaEvent::Unknown)))
-            }
-        }
+                }
+                0x51 => { // Set Tempo
+                    assert!(length == 3);
+                    let mut tempo_data = vec![0;3];
+                    reader.read(&mut tempo_data).ok()?;
+                    tempo_data.insert(0,0);
+                    let tempo = u32::from_be_bytes(tempo_data.try_into().unwrap());
+                    MetaEvent::SetTempo { tempo }
+                },
+                0x58 => { // Time Signature
+                    assert!(length == 4);
+                    let mut time_sig_data = [0;4];
+                    reader.read(&mut time_sig_data).ok()?;
+                    let denominator = time_sig_data[0];
+                    let numerator = 2_u8.pow(time_sig_data[1] as u32);
+                    let metronome_clocks = time_sig_data[2];
+                    let notated_32s_per_quarter = time_sig_data[3];
+                    MetaEvent::TimeSignature { denominator, numerator, metronome_clocks, notated_32s_per_quarter }
+                }
+                0x01 => { // Text
+                    let mut text_data = vec![0; length as usize];
+                    reader.read(&mut text_data[..]).ok()?;
+                    let text_str = std::str::from_utf8(&text_data).ok()?;
+                    MetaEvent::Text { text: text_str.to_string() }
+                }
+                _ => {
+                    let mut unknown_data = vec![0; length as usize];
+                    reader.read(&mut unknown_data).ok()?;
+                    MetaEvent::Unknown
+                }
+            })
 
-    } else if signal >> 4 == 0xF { // Sysex
-        match signal {
-            0xF0 => {
-                let mut ignored_data = [0];
-                loop {
-                    if reader.read(&mut ignored_data).ok()? == 0 { return None };
-                    if ignored_data[0] >> 7 == 1 {
-                        break;
+        } else if signal >> 4 == 0xF { // Sysex
+            match signal {
+                0xF0 => {
+                    let mut ignored_data = [0];
+                    loop {
+                        if reader.read(&mut ignored_data).ok()? == 0 { return None };
+                        if ignored_data[0] >> 7 == 1 {
+                            break;
+                        }
                     }
+                    Event::Sysex
                 }
-                Some((dt, Event::Sysex))
+                _ => todo!()
             }
-            _ => todo!()
-        }
-    } else { // Midi
-        let midi_event_type = signal >> 4;
-        let channel = signal & 0xF;
-        match midi_event_type {
-            0b1011 => { // Control Change
-                let mut control_change_data = [0;2];
-                reader.read(&mut control_change_data).ok()?;
-                Some((dt, match control_change_data[0] {
-                    0x79 => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::ResetAllControllers)),
-                    0x00 => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::BankSelectMSB(
-                        control_change_data[1]
-                    ))),
-                    0x20 => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::BankSelectLSB(
-                        control_change_data[1]
-                    ))),
-                    0x07 => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::ChannelVolumeMSB(
-                        control_change_data[1]
-                    ))),
-                    0x0A => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::PanMSB(
-                        control_change_data[1]
-                    ))),
-                    0x0B => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::ExpressionControllerMSB(
-                        control_change_data[1]
-                    ))),
-                    0x5B => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::EffectsDepth1LSB(
-                        control_change_data[1]
-                    ))),
-                    0x5D => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::EffectsDepth3LSB(
-                        control_change_data[1]
-                    ))),
-                    0x65 => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::RegisteredParameterNumberMSB(
-                        control_change_data[1]
-                    ))),
-                    0x64 => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::RegisteredParameterNumberLSB(
-                        control_change_data[1]
-                    ))),
-                    0x06 => Event::Midi(channel, MidiEvent::ControlChange(ControllerMessage::DataEntryMSB(
-                        control_change_data[1]
-                    ))),
-                    _ => todo!("{}", control_change_data[0])
-                }))
-            },
-            0b1100 => { // Program Change
-                let mut program_data = [0];
-                reader.read(&mut program_data).ok()?;
-                match program_data[0] { // Maybe use predefined array/hashmap/enum
-                    0 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::AcousticGrandPiano)))),
-                    118 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::SynthDrum)))),
-                    39 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::SynthBass2)))),
-                    90 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::Pad3)))),
-                    28 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::ElectricGuitarMuted)))),
-                    27 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::ElectricGuitarClean)))),
-                    61 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::BrassSection)))),
-                    48 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::StringEnsemble2)))),
-                    82 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::Lead3)))),
-                    53 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::VoiceOohs)))),
-                    65 => Some((dt, Event::Midi(channel,MidiEvent::ProgramChange(Program::AltoSax)))),
-                    _ => todo!("{}", program_data[0])
+        } else { // Midi
+            let midi_event_type = signal >> 4;
+            let channel = signal & 0xF;
+            Event::Midi(channel, match midi_event_type {
+                0b1011 => { // Control Change
+                    let mut control_change_data = [0;2];
+                    reader.read(&mut control_change_data).ok()?;
+                    MidiEvent::ControlChange(match control_change_data[0] {
+                        0x79 => ControllerMessage::ResetAllControllers,
+                        0x00 => ControllerMessage::BankSelectMSB(control_change_data[1]),
+                        0x20 => ControllerMessage::BankSelectLSB(control_change_data[1]),
+                        0x07 => ControllerMessage::ChannelVolumeMSB(control_change_data[1]),
+                        0x0A => ControllerMessage::PanMSB(control_change_data[1]),
+                        0x0B => ControllerMessage::ExpressionControllerMSB(control_change_data[1]),
+                        0x5B => ControllerMessage::EffectsDepth1LSB(control_change_data[1]),
+                        0x5D => ControllerMessage::EffectsDepth3LSB(control_change_data[1]),
+                        0x65 => ControllerMessage::RegisteredParameterNumberMSB(control_change_data[1]),
+                        0x64 => ControllerMessage::RegisteredParameterNumberLSB(control_change_data[1]),
+                        0x06 => ControllerMessage::DataEntryMSB(control_change_data[1]),
+                        _ => todo!("{}", control_change_data[0])
+                    })
+                },
+                0b1100 => { // Program Change
+                    let mut program_data = [0];
+                    reader.read(&mut program_data).ok()?;
+                    MidiEvent::ProgramChange(match program_data[0] { // Maybe use predefined array/hashmap/enum
+                        0 => Program::AcousticGrandPiano,
+                        118 => Program::SynthDrum,
+                        39 => Program::SynthBass2,
+                        90 => Program::Pad3,
+                        28 => Program::ElectricGuitarMuted,
+                        27 => Program::ElectricGuitarClean,
+                        61 => Program::BrassSection,
+                        48 => Program::StringEnsemble2,
+                        82 => Program::Lead3,
+                        53 => Program::VoiceOohs,
+                        65 => Program::AltoSax,
+                        _ => todo!("{}", program_data[0])
+                    })
+                },
+                0b1110 => { // Pitch Wheel Change
+                    let mut pitch_change_data = [0;2];
+                    reader.read(&mut pitch_change_data).ok()?;
+                    let pitch = ((pitch_change_data[1] as u32) << 7) | (pitch_change_data[0] as u32);
+                    MidiEvent::PitchWheelChange(pitch)
                 }
-            },
-            0b1110 => { // Pitch Wheel Change
-                let mut pitch_change_data = [0;2];
-                reader.read(&mut pitch_change_data).ok()?;
-                let pitch = ((pitch_change_data[1] as u32) << 7) | (pitch_change_data[0] as u32);
-                //println!("{:b} {:b} {:b}", pitch, pitch_change_data[0], pitch_change_data[1]);
-                Some((dt,Event::Midi(channel, MidiEvent::PitchWheelChange(pitch))))
-            }
-            0b1001 => { // Note On
-                let mut note_data = [0;2];
-                reader.read(&mut note_data).ok()?;
-                let octave = (note_data[0] / Key::KEY_COUNT as u8) as i8 - 1;
-                let key: Key = (note_data[0] % Key::KEY_COUNT as u8).try_into().unwrap();
-                //println!("{}, {}, {}, {:?}", channel, note_data[0], octave, key);
-                Some((dt,Event::Midi(channel, MidiEvent::NoteOn { octave, key, velocity: note_data[1] })))
-            }
-            0b1000 => {
-                let mut note_data = [0;2];
-                reader.read(&mut note_data).ok()?;
-                let octave = (note_data[0] / Key::KEY_COUNT as u8) as i8 - 1;
-                let key: Key = (note_data[0] % Key::KEY_COUNT as u8).try_into().unwrap();
-
-                Some((dt,Event::Midi(channel, MidiEvent::NoteOff { octave, key, velocity: note_data[1] })))
-            }
-            _ => todo!("{:b}", midi_event_type)
+                0b1001 => { // Note On
+                    let mut note_data = [0;2];
+                    reader.read(&mut note_data).ok()?;
+                    MidiEvent::NoteOn { key: note_data[0], velocity: note_data[1] }
+                }
+                0b1000 => {
+                    let mut note_data = [0;2];
+                    reader.read(&mut note_data).ok()?;
+                    MidiEvent::NoteOff { key: note_data[0], velocity: note_data[1] }
+                }
+                _ => todo!("{:b}", midi_event_type)
+            })
         }
-    }
-    
+    }))
 }
 
 fn read_chunk(reader: &mut impl Read) -> Chunk {
@@ -523,10 +493,12 @@ const NOTE_FREQUENCIES: [f64;128] = [8.175798915643682,
     12543.853951416007,
 ];
 
+
 use raylib::prelude::*;
 use raylib::core::logging::set_trace_log;
 
-fn draw_keyboard(d: &mut impl RaylibDraw, bounds: Rectangle, key_map: [bool;128]) {
+
+fn draw_keyboard(d: &mut impl RaylibDraw, bounds: Rectangle, key_map: [Option<Color>;128]) {
     let white_key_count: usize = 75;
     let white_key_width = bounds.width / white_key_count as f32;
     let black_key_width = white_key_width / 2.0;
@@ -548,7 +520,7 @@ fn draw_keyboard(d: &mut impl RaylibDraw, bounds: Rectangle, key_map: [bool;128]
 
     for i in 0..white_key_count {
         let key_id = get_key_id(i);
-        let draw_color = if key_map[key_id] { Color::GREEN } else { Color::WHITE };
+        let draw_color = if let Some(color) = key_map[key_id] { color } else { Color::WHITE };
 
         let key_rect = key_rect(i);
         d.draw_rectangle_rec(key_rect, draw_color);
@@ -569,15 +541,15 @@ fn draw_keyboard(d: &mut impl RaylibDraw, bounds: Rectangle, key_map: [bool;128]
                     black_key_width,
                     black_key_height
                 );
-            let draw_color = if key_map[key_id] { Color::GREEN } else { Color::BLACK };
+            let draw_color = if let Some(color) = key_map[key_id] { color } else { Color::BLACK };
             d.draw_rectangle_rec(black_key_bounds, draw_color);
         }
     }
 }
 
-fn get_ticks_per_frame(fps: u32, tempo: u32, ticks_per_quarter: u32) -> u32 { // TEMPO IN USECS
-    (ticks_per_quarter as f32 / (tempo as f32 * 1.0e-6) / (fps as f32)) as u32
-}
+//fn get_ticks_per_frame(fps: u32, tempo: u32, ticks_per_quarter: u32) -> u32 { // TEMPO IN USECS
+//    (ticks_per_quarter as f32 / (tempo as f32 * 1.0e-6) / (fps as f32)) as u32
+//}
 
 fn get_tick_time(ticks: u32, tempo: u32, ticks_per_quarter: u32) -> u32 {
     tempo * ticks / ticks_per_quarter
@@ -591,7 +563,46 @@ use std::i16;
 
 const STANDARD_TEMPO: u32 = 500_000;
 
-fn generate_audio(file: &MidiFile, channel: u8, wav_file_path: &str) {
+
+fn note_sine(t: f64, note: usize) -> f64 {
+    (t * NOTE_FREQUENCIES[note] * 2.0 * PI).sin()
+}
+
+fn note_square(t: f64, note: usize) -> f64 {
+    let period_length = 1.0;
+    let period_progress = t*NOTE_FREQUENCIES[note] % period_length;
+    //println!("t={},period_length={},period_progress={}",t,period_length,period_progress);
+    if period_progress >= period_length / 2.0 {
+        1.0
+    } else {
+        -1.0
+    }
+}
+
+fn note_drum(t: f64, _: usize) -> f64 {
+    let noise = get_random_value::<i32>(-i16::MAX as i32, i16::MAX as i32) as f64 / i16::MAX as f64;
+    if t < 0.15 && t >= 0.0 {
+        noise * (1.0-t/0.15)
+    } else {
+        0.0
+    }
+}
+
+fn note_saw_tooth(t: f64, note: usize) -> f64 {
+    let period_length = 1.0;
+    let period_progress = t*NOTE_FREQUENCIES[note] % period_length;
+    //println!("t={},period_length={},period_progress={}",t,period_length,period_progress);
+    period_progress / period_length * 2.0 - 1.0
+}
+
+#[derive(Clone,Copy,PartialEq,Debug)]
+struct PressedKeyInfo {
+    elapsed_time: f64,
+    channel: u8,
+    key: u8,
+}
+
+fn generate_audio(file: &MidiFile, wav_file_path: &str) {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 44100,
@@ -613,23 +624,30 @@ fn generate_audio(file: &MidiFile, channel: u8, wav_file_path: &str) {
 
     assert!(file.header.format == Format::SINGLE_TRACK);
 
-    let mut key_map: [Option<f64>;127] = [None; 127];
+    let mut channels = [(Program::AcousticGrandPiano,127);256];
+    let mut pressed_keys = Vec::<PressedKeyInfo>::new();
 
     for (dt,event) in file.tracks[0].events.iter() {
         let elapsing_samples = usec_per_tick as u64 * *dt as u64 * spec.sample_rate as u64 / 1_000_000;
         let sec_per_sample = 1.0 / spec.sample_rate as f64;
         
-        for sample in 0..elapsing_samples {
+        for _ in 0..elapsing_samples {
             let mut s = 0.0;
-            let mut pressed_keys = 0;
-            for (i,key_time) in key_map.iter_mut().enumerate() {
-                if let Some(t) = key_time {
-                    s += (*t * NOTE_FREQUENCIES[i] * 2.0 * PI).sin();
-                    *t += sec_per_sample;
-                }
-                pressed_keys += 1;
+            for key_info in pressed_keys.iter_mut() {
+                
+                    let note_function = match channels[key_info.channel as usize].0 {
+                        //Program::AcousticGrandPiano => note_sine(*t,i),
+                        Program::AltoSax => note_saw_tooth,
+                        Program::StringEnsemble2 => note_square,
+                        Program::BrassSection | Program::SynthDrum | Program::Pad3 => note_drum,
+                        Program::SynthBass2 => note_drum,
+                        _ => note_sine
+                    } ;
+                    s += note_function(key_info.elapsed_time, key_info.key as usize)* channels[key_info.channel as usize].1 as f64 / 127.0;
+                    key_info.elapsed_time += sec_per_sample;
+                
             }
-            s /= pressed_keys as f64;
+            s /= 10.0; //pressed_keys.len() as f64;
             writer.write_sample((i16::MAX as f64 * s) as i16).unwrap();
         }
 
@@ -642,18 +660,25 @@ fn generate_audio(file: &MidiFile, channel: u8, wav_file_path: &str) {
                     todo!("Other divisions")
                 };
             },
-            Event::Midi(c,MidiEvent::NoteOn { octave, key, ..}) => {
-                let index = key_index(*key, *octave);
-                if *c == channel {
-                    key_map[index] = Some(0.0);
+            Event::Midi(c,MidiEvent::NoteOn { key, ..}) => {
+                //if *c == channel {
+                    pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key });
                   // println!("HHHHHHSDHFSDFSD?????");
-                }
+                //}
             }
-            Event::Midi(c,MidiEvent::NoteOff { octave, key, ..}) => {
-                let index = key_index(*key, *octave);
-                if *c == channel {
-                    key_map[index] = None;
+            Event::Midi(c,MidiEvent::NoteOff { key, .. }) => {
+                for i in 0..pressed_keys.len() {
+                    if pressed_keys[i].channel == *c && pressed_keys[i].key == *key {
+                        pressed_keys.remove(i);
+                        break;
+                    }
                 }
+            },
+            Event::Midi(c, MidiEvent::ControlChange(ControllerMessage::ChannelVolumeMSB(new_volume))) => {
+                channels[*c as usize].1 = *new_volume;
+            },
+            Event::Midi(c, MidiEvent::ProgramChange(prog)) => {
+                channels[*c as usize].0 = *prog;
             }
             _ => {}
         }
@@ -665,12 +690,23 @@ fn generate_audio(file: &MidiFile, channel: u8, wav_file_path: &str) {
 use raylib::core::audio::Music;
 use raylib::core::audio::RaylibAudio;
 
-const LISTEN_CHANNEL: u8 = 15;
+//const LISTEN_CHANNEL: u8 = 8;
+
+const COLORS: [Color; 8] = [
+    Color::GREEN,
+    Color::RED,
+    Color::BLUE,
+    Color::MAGENTA,
+    Color::GOLD,
+    Color::PINK,
+    Color::YELLOW,
+    Color::SKYBLUE
+];
 
 fn main() -> std::io::Result<()> {
     let file =  MidiFile::read_midi("Never-Gonna-Give-You-Up-3.mid")?;
     let wav_file_path = "test.wav";
-    generate_audio(&file, LISTEN_CHANNEL, wav_file_path);
+    generate_audio(&file, wav_file_path);
     assert!(file.header.format == Format::SINGLE_TRACK);
 
     const WINDOW_WIDTH: i32 = 2560;
@@ -711,7 +747,7 @@ fn main() -> std::io::Result<()> {
     let mut dt_counter: u32 = 0;
 
     
-    let mut key_map  = [false; 128];
+    let mut key_map  = [None; 128];
     //key_map[60] = true;
     //key_map[63] = true;
     //key_map[67] = true;
@@ -738,23 +774,16 @@ fn main() -> std::io::Result<()> {
                 Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
                     tempo = t;
                 },
-                Event::Midi(channel,MidiEvent::ProgramChange(program)) => {
-                    if channel == LISTEN_CHANNEL {
-                        println!("Program for channel {}: {:?}", channel, program);
-                    }
+                //Event::Midi(channel,MidiEvent::ProgramChange(program)) => {
+                //    //if channel == LISTEN_CHANNEL {
+                //    //    println!("Program for channel {}: {:?}", channel, program);
+                //    //}
+                //}
+                Event::Midi(channel,MidiEvent::NoteOn { key, ..}) => {
+                    key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len() ]);
                 }
-                Event::Midi(channel,MidiEvent::NoteOn { octave, key, ..}) => {
-                    let index = key_index(key, octave);
-                    if channel == LISTEN_CHANNEL {
-                        key_map[index] = true;
-                      // println!("HHHHHHSDHFSDFSD?????");
-                    }
-                }
-                Event::Midi(channel,MidiEvent::NoteOff { octave, key, ..}) => {
-                    let index = key_index(key, octave);
-                    if channel == LISTEN_CHANNEL {
-                        key_map[index] = false;
-                    }
+                Event::Midi(_, MidiEvent::NoteOff { key, ..}) => {
+                    key_map[key as usize] = None;
                 }
                 _ => {}
             }
@@ -765,12 +794,13 @@ fn main() -> std::io::Result<()> {
             event_pointer += 1;
         }
         //dt_counter = 0;
-
+        
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(Color::BLACK);
         //d.draw_text("Hello World", 23, 23, 23, Color::RAYWHITE);
         let key_board_bounds = Rectangle::new(0.0, WINDOW_HEIGHT as f32 * 7.0/8.0, WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32 / 8.0);
         draw_keyboard(&mut d, key_board_bounds, key_map);
+        
         //for (i,event) in event_queue.iter().enumerate() {
         //    d.draw_text(&format!("{:?}", event), 23, 23 + i as i32 * 40, 23, Color::WHITE);
         //}
