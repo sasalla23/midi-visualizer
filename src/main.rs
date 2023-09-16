@@ -1,9 +1,9 @@
 use std::fs::File;
-use std::io::BufReader;
+//use std::io::BufReader;
 use std::io::prelude::*;
 use std::str;
 use std::io;
-use std::collections::VecDeque;
+//use std::collections::VecDeque;
 
 #[derive(Debug, Clone,Copy,PartialEq, Eq)]
 enum Format {
