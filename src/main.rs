@@ -65,13 +65,27 @@ enum Program {
     SynthDrum,
     SynthBass2,
     Pad3,
+    Pad1,
     ElectricGuitarMuted,
     ElectricGuitarClean,
     BrassSection,
     StringEnsemble2,
+    StringEnsemble1,
     Lead3,
     VoiceOohs,
     AltoSax,
+    ElectricPiano2,
+    Clavinet,
+    SynthBrass2,
+    SynthBrass1,
+    SynthStrings1,
+    FretlessBass,
+    Lead1,
+    PercussiveOrgan,
+    OrchestraHit,
+    SynthStrings2,
+    RockOrgan,
+    Lead2,
 }
 
 #[derive(Debug, Clone,Copy,PartialEq,Eq)]
@@ -86,8 +100,13 @@ enum ControllerMessage {
     EffectsDepth3LSB(u8),
     RegisteredParameterNumberMSB(u8),
     RegisteredParameterNumberLSB(u8),
+    NonRegisteredParameterNumberMSB(u8),
+    NonRegisteredParameterNumberLSB(u8),
     DataEntryMSB(u8),
-    DamperPedalOn(bool)
+    DamperPedalOn(bool),
+    AllSoundOff,
+    AllNotesOff,
+    ModulationWheel(u8),
 }
 
 #[derive(Debug,Clone)]
@@ -190,6 +209,7 @@ fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
                 _ => {
                     let mut unknown_data = vec![0; length as usize];
                     reader.read(&mut unknown_data).ok()?;
+                    println!("Unknown Meta Event: {:X}", meta_type);
                     MetaEvent::Unknown
                 }
             })
@@ -224,10 +244,15 @@ fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
                         0x0B => ControllerMessage::ExpressionControllerMSB(control_change_data[1]),
                         0x5B => ControllerMessage::EffectsDepth1LSB(control_change_data[1]),
                         0x5D => ControllerMessage::EffectsDepth3LSB(control_change_data[1]),
+                        0x63 => ControllerMessage::NonRegisteredParameterNumberMSB(control_change_data[1]),
+                        0x62 => ControllerMessage::NonRegisteredParameterNumberLSB(control_change_data[1]),
                         0x65 => ControllerMessage::RegisteredParameterNumberMSB(control_change_data[1]),
                         0x64 => ControllerMessage::RegisteredParameterNumberLSB(control_change_data[1]),
                         0x06 => ControllerMessage::DataEntryMSB(control_change_data[1]),
                         0x40 => ControllerMessage::DamperPedalOn(control_change_data[1] >= 64),
+                        0x78 => ControllerMessage::AllSoundOff,
+                        0x7B => ControllerMessage::AllNotesOff,
+                        0x01 => ControllerMessage::ModulationWheel(control_change_data[1]),
                         _ => todo!("{}", control_change_data[0])
                     })
                 },
@@ -242,10 +267,24 @@ fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
                         28 => Program::ElectricGuitarMuted,
                         27 => Program::ElectricGuitarClean,
                         61 => Program::BrassSection,
-                        48 => Program::StringEnsemble2,
+                        48 => Program::StringEnsemble1,
                         82 => Program::Lead3,
                         53 => Program::VoiceOohs,
                         65 => Program::AltoSax,
+                        5  => Program::ElectricPiano2,
+                        49 => Program::StringEnsemble2,
+                        7 => Program::Clavinet,
+                        63 => Program::SynthBrass2,
+                        88 => Program::Pad1,
+                        62 => Program::SynthBrass1,
+                        50 => Program::SynthStrings1,
+                        35 => Program::FretlessBass,
+                        80 => Program::Lead1,
+                        17 => Program::PercussiveOrgan,
+                        55 => Program::OrchestraHit,
+                        51 => Program::SynthStrings2,
+                        18 => Program::RockOrgan,
+                        81 => Program::Lead2,
                         _ => todo!("{}", program_data[0])
                     })
                 },
@@ -272,7 +311,7 @@ fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
 }
 
 fn read_chunk(reader: &mut impl Read) -> Chunk {
-    println!("==== Chunk ====");
+    //println!("==== Chunk ====");
     let mut name_bytes = [0_u8;4];
     let bytes = reader.read(&mut name_bytes).unwrap();
     if bytes == 0 {
@@ -290,11 +329,11 @@ fn read_chunk(reader: &mut impl Read) -> Chunk {
     reader.read(&mut length_bytes).unwrap();
     let length = u32::from_be_bytes(length_bytes);
 
-    println!("Length: {}", length);
+    //println!("Length: {}", length);
     
     match name {
         Some(s) if s == "MThd" => {
-            println!("HEADER CHUNK!");
+            //println!("HEADER CHUNK!");
             assert!(length == 6);
             let mut data = [0_u8;2];
             reader.read(&mut data).unwrap();
@@ -322,12 +361,13 @@ fn read_chunk(reader: &mut impl Read) -> Chunk {
             Chunk::Header(HeaderChunk { format, ntrks, division })
         },
         Some(s) if s == "MTrk"=> {
-            println!("TRACK CHUNK!");
+            //println!("TRACK CHUNK!");
             let mut content = vec![0;length as usize];
             reader.read(&mut content).unwrap();
             let mut track_reader = content.as_slice();
             let mut events = vec![];
             while let Some(event) = read_event(&mut track_reader) {
+                //println!("Event: {:?}", &event);
                 events.push(event);
             }
             Chunk::Track(TrackChunk { events } )
@@ -351,7 +391,7 @@ impl MidiFile {
         let mut file = File::open(file_path).unwrap();
         let header_chunk = read_chunk(&mut file);
         if let Chunk::Header(header) = header_chunk {
-            println!("{:?}", header);
+            //println!("{:?}", header);
             let mut tracks = vec![];
             for _ in 0..header.ntrks {
                 let next_chunk = read_chunk(&mut file);
@@ -562,9 +602,8 @@ fn draw_keyboard(d: &mut impl RaylibDraw, bounds: Rectangle, key_map: [Option<Co
 //}
 
 fn get_tick_time(ticks: u32, tempo: u32, ticks_per_quarter: u32) -> u32 {
-    tempo * ticks / ticks_per_quarter
+    (tempo as u64 * ticks as u64 / ticks_per_quarter as u64) as u32
 }
-
 
 
 use hound;
@@ -582,10 +621,11 @@ fn note_square(t: f64, note: usize) -> f64 {
     let period_length = 1.0;
     let period_progress = t*NOTE_FREQUENCIES[note] % period_length;
     //println!("t={},period_length={},period_progress={}",t,period_length,period_progress);
+    const DEFAULT_VOLUME: f64 = 0.25;
     if period_progress >= period_length / 2.0 {
-        1.0
+        DEFAULT_VOLUME
     } else {
-        -1.0
+        -DEFAULT_VOLUME
     }
 }
 
@@ -602,7 +642,7 @@ fn note_saw_tooth(t: f64, note: usize) -> f64 {
     let period_length = 1.0;
     let period_progress = t*NOTE_FREQUENCIES[note] % period_length;
     //println!("t={},period_length={},period_progress={}",t,period_length,period_progress);
-    period_progress / period_length * 2.0 - 1.0
+    (period_progress / period_length * 2.0 - 1.0) * 0.5
 }
 
 #[derive(Clone,Copy,PartialEq,Debug)]
@@ -655,10 +695,24 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
                     
                         let note_function = match channels[key_info.channel as usize].0 {
                             //Program::AcousticGrandPiano => note_sine(*t,i),
-                            Program::AltoSax => note_saw_tooth,
-                            Program::StringEnsemble2 => note_square,
-                            Program::BrassSection | Program::SynthDrum | Program::Pad3 => note_drum,
-                            Program::SynthBass2 => note_drum,
+                            Program::StringEnsemble2
+                                | Program::SynthStrings1
+                                | Program::SynthStrings2
+                                | Program::Lead1
+                                | Program::BrassSection
+                                | Program::SynthBrass1
+                                | Program::SynthBrass2
+                                => note_square,
+                            Program::SynthDrum
+                                | Program::Pad1
+                                | Program::Pad3
+                                | Program::OrchestraHit
+                                => note_drum,
+                            Program::SynthBass2
+                                | Program::FretlessBass
+                                | Program::AltoSax
+                                | Program::Lead2
+                                => note_saw_tooth,
                             _ => note_sine
                         } ;
                         s += note_function(key_info.elapsed_time, key_info.key as usize)* channels[key_info.channel as usize].1 as f64 / 127.0;
