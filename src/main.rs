@@ -86,6 +86,16 @@ enum Program {
     SynthStrings2,
     RockOrgan,
     Lead2,
+    Trumpet,
+    ChoirAahs,
+    Viola,
+    Bassoon,
+    FrenchHorn,
+    Trombone,
+    Timpani,
+    Clarinet,
+    OrchestralHarp,
+    Piccolo
 }
 
 #[derive(Debug, Clone,Copy,PartialEq,Eq)]
@@ -205,6 +215,11 @@ fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
                     reader.read(&mut text_data[..]).ok()?;
                     let text_str = std::str::from_utf8(&text_data).ok()?;
                     MetaEvent::Text { text: text_str.to_string() }
+                },
+                0x2F => {
+                    let mut end_data = [0];
+                    reader.read(&mut end_data).ok()?;
+                    MetaEvent::EndOfTrack
                 }
                 _ => {
                     let mut unknown_data = vec![0; length as usize];
@@ -285,7 +300,18 @@ fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
                         51 => Program::SynthStrings2,
                         18 => Program::RockOrgan,
                         81 => Program::Lead2,
-                        _ => todo!("{}", program_data[0])
+                        56 => Program::Trumpet,
+                        52 => Program::ChoirAahs,
+                        42 => Program::Viola,
+                        70 => Program::Bassoon,
+                        60 => Program::FrenchHorn,
+                        57 => Program::Trombone,
+                        47 => Program::Timpani,
+                        71 => Program::Clarinet,
+                        46 => Program::OrchestralHarp,
+                        73 => Program::Piccolo,
+                        _ => Program::AcousticGrandPiano,
+                        //_ => todo!("{}", program_data[0])
                     })
                 },
                 0b1110 => { // Pitch Wheel Change
@@ -304,7 +330,7 @@ fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
                     reader.read(&mut note_data).ok()?;
                     MidiEvent::NoteOff { key: note_data[0], velocity: note_data[1] }
                 }
-                _ => todo!("{:b}", midi_event_type)
+                _ => todo!("Signal: {:X}, Midi type: {:b}", signal, midi_event_type)
             })
         }
     }))
@@ -642,7 +668,7 @@ fn note_saw_tooth(t: f64, note: usize) -> f64 {
     let period_length = 1.0;
     let period_progress = t*NOTE_FREQUENCIES[note] % period_length;
     //println!("t={},period_length={},period_progress={}",t,period_length,period_progress);
-    (period_progress / period_length * 2.0 - 1.0) * 0.5
+    (period_progress / period_length * 2.0 - 1.0) * 0.25
 }
 
 #[derive(Clone,Copy,PartialEq,Debug)]
@@ -696,6 +722,7 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
                         let note_function = match channels[key_info.channel as usize].0 {
                             //Program::AcousticGrandPiano => note_sine(*t,i),
                             Program::StringEnsemble2
+                                | Program::StringEnsemble1
                                 | Program::SynthStrings1
                                 | Program::SynthStrings2
                                 | Program::Lead1
@@ -714,8 +741,8 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
                                 | Program::Lead2
                                 => note_saw_tooth,
                             _ => note_sine
-                        } ;
-                        s += note_function(key_info.elapsed_time, key_info.key as usize)* channels[key_info.channel as usize].1 as f64 / 127.0;
+                        };
+                        s += note_function(key_info.elapsed_time, key_info.key as usize) * channels[key_info.channel as usize].1 as f64 / 127.0;
                         key_info.elapsed_time += sec_per_sample;
                     
                 }
@@ -887,6 +914,10 @@ fn main() -> std::io::Result<()> {
         }
         //dt_counter = 0;
         
+        if rl.is_key_pressed(KeyboardKey::KEY_B) {
+            rl.take_screenshot(&thread, "screenshot.png");
+        }
+
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(Color::BLACK);
         //d.draw_text("Hello World", 23, 23, 23, Color::RAYWHITE);
