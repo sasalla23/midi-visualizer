@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::str;
 use std::io;
+use std::sync::Arc;
 //use std::collections::VecDeque;
 
 #[derive(Debug, Clone,Copy,PartialEq, Eq)]
@@ -134,19 +135,19 @@ enum MidiEvent {
     NoteOff { key: u8, velocity: u8 }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct HeaderChunk {
     format: Format,
     ntrks: u32,
     division: Division
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 struct TrackChunk { 
     events: Vec<(u32, Event)>
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Chunk {
     Header(HeaderChunk),
     Track(TrackChunk),
@@ -432,6 +433,7 @@ fn read_chunk(reader: &mut impl Read) -> Chunk {
     }
 }
 
+#[derive(Clone)]
 struct MidiFile {
     header: HeaderChunk,
     tracks: Vec<TrackChunk>,
@@ -701,6 +703,7 @@ struct PressedKeyInfo {
     elapsed_time: f64,
     channel: u8,
     key: u8,
+    velocity: u8,
 }
 
 
@@ -725,7 +728,17 @@ impl NormalizedTrack {
 
 const DEFAULT_TRACK: usize = 0;
 
-fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> {
+use std::thread;
+use std::sync::mpsc;
+
+#[derive(Clone, Debug)]
+struct ProgressInfo {
+    track: usize,
+    track_progress: f64,
+    result: Option<Vec<NormalizedTrack>>,
+}
+
+fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, sender: mpsc::Sender<ProgressInfo>) {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 44100,
@@ -755,9 +768,9 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
     };
 
     let mut noramalized_tracks = vec![NormalizedTrack::new(); simult_tracks];
-
+    let mut progress_info = ProgressInfo { track: 0, track_progress: 0.0, result: None };
     for track in 0..simult_tracks {
-        
+        progress_info.track = track;
         //let track = DEFAULT_TRACK;
         let mut channels = [(0,127);256]; // (Program, Volume)
         let mut pressed_keys = Vec::<PressedKeyInfo>::new();
@@ -769,7 +782,8 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
             }
         }
 
-        for (dt,event) in file.tracks[track].events.iter() {
+        for (event_index, (dt,event)) in file.tracks[track].events.iter().enumerate() {
+            progress_info.track_progress = event_index as f64 / file.tracks[track].events.len() as f64;
             //let elapsing_samples = usec_per_tick as u64 * *dt as u64 * spec.sample_rate as u64 / 1_000_000;
             let sec_per_sample = 1.0 / spec.sample_rate as f64;
             let mut dt_float = *dt as f64;
@@ -838,7 +852,7 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
                         //        => note_saw_tooth,
                         //    _ => note_sine
                         //};
-                        s += note_function(key_info.elapsed_time, key_info.key as usize) * channels[key_info.channel as usize].1 as f64 / 127.0;
+                        s += note_function(key_info.elapsed_time, key_info.key as usize) * channels[key_info.channel as usize].1 as f64 / 127.0 * key_info.velocity as f64 / 127.0;
                         key_info.elapsed_time += sec_per_sample;
                 }
                 s /= 10.0; //pressed_keys.len() as f64;
@@ -890,9 +904,9 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
                     }
                     noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOff { key: *key, program: channels[*c as usize].0, channel: *c }));
                 },
-                Event::Midi(c,MidiEvent::NoteOn { key, ..}) => {
+                Event::Midi(c,MidiEvent::NoteOn { key, velocity }) => {
                     //if *c == channel {
-                        pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key });
+                        pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key, velocity: *velocity });
                       // println!("HHHHHHSDHFSDFSD?????");
                     //}
                     noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOn { key: *key, program: channels[*c as usize].0, channel: *c }));
@@ -906,6 +920,7 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
                 }
                 _ => {}
             }
+            if event_index % 100 == 0 { sender.send(progress_info.clone()).unwrap(); }
         }
     }
     //println!("END_OF_GENERATION");
@@ -913,7 +928,8 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
         writer.write_sample(s).unwrap();
     }
     writer.finalize().unwrap();
-    noramalized_tracks
+    progress_info.result = Some(noramalized_tracks);
+    sender.send(progress_info).unwrap();
 }
 
 
@@ -959,6 +975,12 @@ impl TrackPlayer {
 
 use std::env;
 
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+enum State {
+    RENDERING,
+    VISUALIZING
+}
+
 fn main() -> std::io::Result<()> {
     let args = env::args().collect::<Vec<_>>();
     if args.len() < 3 {
@@ -966,9 +988,18 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
-    let file =  MidiFile::read_midi(&args[1])?;
+    let file =  Arc::new(MidiFile::read_midi(&args[1])?);
+    
+
     let wav_file_path = args[2].clone();
-    let normed_tracks = generate_audio(&file, &wav_file_path);
+
+    let mut state = State::RENDERING;
+    let (sender,receiver) = mpsc::channel();
+    {
+        let file_pointer = Arc::clone(&file);
+        let wav_file_path = wav_file_path.clone();
+        thread::spawn(move || generate_audio(file_pointer, &wav_file_path, sender));
+    }
     assert!(file.header.format != Format::SEQUENCE_TRACK);
 
     const WINDOW_WIDTH: i32 = 1280;
@@ -980,10 +1011,13 @@ fn main() -> std::io::Result<()> {
     let (mut rl, thread) = raylib::init().width(WINDOW_WIDTH).height(WINDOW_HEIGHT).title("Mididi").build();
 
     let mut rl_audio = RaylibAudio::init_audio_device();
-    let mut music = Music::load_music_stream(&thread, &wav_file_path).unwrap();
+    let mut music = None;
+    //let mut music = Music::load_music_stream(&thread, &wav_file_path).unwrap();
     
     rl.set_exit_key(None);
     rl.set_target_fps(FPS);
+
+    let mut normed_tracks: Option<Vec<NormalizedTrack>> = None;
     
     
     //let mut tempo = STANDARD_TEMPO;
@@ -1002,9 +1036,9 @@ fn main() -> std::io::Result<()> {
     let mut track_players = vec![TrackPlayer::new(); simult_tracks as usize];
     
     let mut key_map  = [None; 128];
+    let mut progress_info = ProgressInfo { track: 0, track_progress: 0.0, result: None };
 
-    rl_audio.play_music_stream(&mut music);
-    rl_audio.set_music_volume(&mut music, 1.0);
+    
     
     while !rl.window_should_close() {
         //queue_timer += 30;
@@ -1012,26 +1046,75 @@ fn main() -> std::io::Result<()> {
         //    event_queue.pop_back();
         //    queue_timer = 0;
         //}
-        rl_audio.update_music_stream(&mut music);
-        let dt = rl.get_frame_time() as f64;
-        'outer: for (i, player) in track_players.iter_mut().enumerate() {
-            if player.event_pointer >= normed_tracks[i].events.len() {
-                continue 'outer;
-            }
-            player.elapsed_time += dt;
-            while player.elapsed_time > normed_tracks[i].events[player.event_pointer].0 {
-                match normed_tracks[i].events[player.event_pointer].1 {
-                    NormalizedEvent::KeyOff { key, .. } => {
-                        key_map[key as usize] = None;
-                    },
-                    NormalizedEvent::KeyOn { key, channel, .. } => {
-                        key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len()]);
-                    },
+        match state {
+        //rl_audio.update_music_stream(&mut music);
+            State::VISUALIZING => {
+                
+                if rl_audio.is_music_playing(music.as_ref().unwrap()) {
+                    let dt = rl.get_frame_time() as f64;
+                    'outer: for (i, player) in track_players.iter_mut().enumerate() {
+                        if player.event_pointer >= normed_tracks.as_ref().unwrap()[i].events.len() {
+                            continue 'outer;
+                        }
+                        
+                        while player.elapsed_time > normed_tracks.as_ref().unwrap()[i].events[player.event_pointer].0 {
+                            match normed_tracks.as_ref().unwrap()[i].events[player.event_pointer].1 {
+                                NormalizedEvent::KeyOff { key, .. } => {
+                                    key_map[key as usize] = None;
+                                },
+                                NormalizedEvent::KeyOn { key, channel, .. } => {
+                                    key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len()]);
+                                },
+                            }
+                            player.event_pointer += 1;
+                            if player.event_pointer >= normed_tracks.as_ref().unwrap()[i].events.len() {
+                                continue 'outer;
+                            }
+                        
+                        }
+                        player.elapsed_time += dt;
+                    }
                 }
-                player.event_pointer += 1;
-                if player.event_pointer >= normed_tracks[i].events.len() {
-                    continue 'outer;
+                if !rl_audio.is_music_playing(music.as_ref().unwrap()) {
+                    rl_audio.play_music_stream(&mut music.as_mut().unwrap());
                 }
+                rl_audio.update_music_stream(&mut music.as_mut().unwrap());
+
+                if rl.is_key_pressed(KeyboardKey::KEY_B) {
+                    rl.take_screenshot(&thread, "screenshot.png");
+                }
+        
+                let mut d = rl.begin_drawing(&thread);
+                d.clear_background(Color::BLACK);
+                //d.draw_text("Hello World", 23, 23, 23, Color::RAYWHITE);
+                let key_board_bounds = Rectangle::new(0.0, WINDOW_HEIGHT as f32 * 7.0/8.0, WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32 / 8.0);
+                draw_keyboard(&mut d, key_board_bounds, key_map);
+            },
+            State::RENDERING => {
+                
+                match receiver.recv_timeout(std::time::Duration::from_secs_f64(1.0 / FPS as f64)) {
+                    Ok(ProgressInfo { result: Some(ntracks), .. }) => {
+                        normed_tracks = Some(ntracks);
+                        state = State::VISUALIZING;
+                        music = Some(Music::load_music_stream(&thread, &wav_file_path).unwrap());
+                    },
+                    Ok(info) => {
+                        progress_info = info;
+                    },
+                    _ => {}
+                }
+
+                const PROGRESS_RECT_WIDTH: f32 = WINDOW_WIDTH as f32 / 3.0 * 2.0;
+                const PROGRESS_RECT_HEIGHT: f32 = 23.0;
+
+                let mut d = rl.begin_drawing(&thread);
+                d.clear_background(Color::BLACK);
+
+                d.draw_text(&format!("Track: {}/{}, Progress: {}", progress_info.track, file.header.ntrks, progress_info.track_progress), 23, 23, 23, Color::WHITE);
+                let mut progress_rect = Rectangle::new(WINDOW_WIDTH as f32 / 2.0 - PROGRESS_RECT_WIDTH / 2.0, WINDOW_HEIGHT as f32 / 2.0 - PROGRESS_RECT_HEIGHT / 2.0, PROGRESS_RECT_WIDTH, PROGRESS_RECT_HEIGHT);
+                d.draw_rectangle_rec(progress_rect, Color::GRAY);
+                progress_rect.width *= progress_info.track_progress as f32;
+                d.draw_rectangle_rec(progress_rect, Color::GREEN);
             }
         }
         //let dt = rl.get_frame_time();
@@ -1070,15 +1153,7 @@ fn main() -> std::io::Result<()> {
         //}
         //dt_counter = 0;
         
-        if rl.is_key_pressed(KeyboardKey::KEY_B) {
-            rl.take_screenshot(&thread, "screenshot.png");
-        }
-
-        let mut d = rl.begin_drawing(&thread);
-        d.clear_background(Color::BLACK);
-        //d.draw_text("Hello World", 23, 23, 23, Color::RAYWHITE);
-        let key_board_bounds = Rectangle::new(0.0, WINDOW_HEIGHT as f32 * 7.0/8.0, WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32 / 8.0);
-        draw_keyboard(&mut d, key_board_bounds, key_map);
+        
         
         //for (i,event) in event_queue.iter().enumerate() {
         //    d.draw_text(&format!("{:?}", event), 23, 23 + i as i32 * 40, 23, Color::WHITE);

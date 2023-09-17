@@ -1,7 +1,7 @@
 # TODO
 ## Audio Generation
 - [x] Handle tempo changes correctly
-- [ ] Handle key press velocity
+- [x] Handle key press velocity
 - [ ] Let user select waveform for instruments
 - [ ] More waveforms
 - [ ] 'Smoother' sounds
@@ -14,4 +14,8 @@
 - [ ] Preview pressed keys
 - [ ] VFX
 - [ ] Properly choose colors (Maybe via user input)
-- [ ] Show rendering progress before starting the visualization
+- [x] Show rendering progress before starting the visualization
+
+## Other
+- [ ] Better Error handling
+- [ ] Modules
