@@ -636,7 +636,7 @@ use hound;
 use std::f64::consts::PI;
 use std::i16;
 
-const STANDARD_TEMPO: u32 = 500_000;
+const STANDARD_TEMPO: u32 = 400_000;
 
 
 fn note_sine(t: f64, note: usize) -> f64 {
@@ -678,7 +678,7 @@ struct PressedKeyInfo {
     key: u8,
 }
 
-const DEFAULT_TRACK: usize = 3;
+const DEFAULT_TRACK: usize = 0;
 
 fn generate_audio(file: &MidiFile, wav_file_path: &str) {
     let spec = hound::WavSpec {
@@ -693,6 +693,15 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
     //    let amplitude = i16::MAX as f32;
     //    writer.write_sample((sample * amplitude) as i16).unwrap();
     //}
+    
+
+    let simult_tracks: usize = file.get_simult_track_count();
+
+    assert!(file.header.format != Format::SEQUENCE_TRACK);
+
+    let mut sample_buffer = Vec::<i16>::new();
+    let mut tempo_changes = Vec::new();
+
     let mut tempo = STANDARD_TEMPO;
     let mut usec_per_tick = if let Division::TicksPerQuarter(ticks) = file.header.division {
         tempo / ticks
@@ -700,22 +709,28 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
         todo!("Other divisions")
     };
 
-    let simult_tracks: usize = file.get_simult_track_count();
-
-    assert!(file.header.format != Format::SEQUENCE_TRACK);
-
-    let mut sample_buffer = Vec::<i16>::new();
-
     for track in 0..simult_tracks {
+        
+        //let track = DEFAULT_TRACK;
         let mut channels = [(Program::AcousticGrandPiano,127);256];
         let mut pressed_keys = Vec::<PressedKeyInfo>::new();
         let mut sample_pointer = 0;
 
+        for (sample_index, usecs) in tempo_changes.iter() {
+            if sample_pointer == *sample_index {
+                usec_per_tick = *usecs;
+            }
+        }
+
         for (dt,event) in file.tracks[track].events.iter() {
-            let elapsing_samples = usec_per_tick as u64 * *dt as u64 * spec.sample_rate as u64 / 1_000_000;
+            //let elapsing_samples = usec_per_tick as u64 * *dt as u64 * spec.sample_rate as u64 / 1_000_000;
             let sec_per_sample = 1.0 / spec.sample_rate as f64;
-            
-            for _ in 0..elapsing_samples {
+            let mut dt_float = *dt as f64;
+            let mut tick_per_sample = 1_000_000.0 as f64 / usec_per_tick as f64 / spec.sample_rate as f64;
+
+            //for _ in 0..elapsing_samples {
+            while dt_float > tick_per_sample {
+                dt_float -= tick_per_sample;
                 let mut s = 0.0;
                 for key_info in pressed_keys.iter_mut() {
                     
@@ -744,7 +759,6 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
                         };
                         s += note_function(key_info.elapsed_time, key_info.key as usize) * channels[key_info.channel as usize].1 as f64 / 127.0;
                         key_info.elapsed_time += sec_per_sample;
-                    
                 }
                 s /= 10.0; //pressed_keys.len() as f64;
                 //writer.write_sample((i16::MAX as f64 * s) as i16).unwrap();
@@ -754,8 +768,16 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
                 } else {
                     sample_buffer[sample_pointer] += sample_value;
                 }
+                for (sample_index, usecs) in tempo_changes.iter() {
+                    if sample_pointer == *sample_index {
+                        usec_per_tick = *usecs;
+                        tick_per_sample = 1_000_000.0 as f64 / usec_per_tick as f64 / spec.sample_rate as f64;
+                    }
+                }
                 sample_pointer += 1;
             }
+            
+            
 
             match event {
                 Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
@@ -765,6 +787,9 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
                     } else {
                         todo!("Other divisions")
                     };
+                    //assert!(track==0);
+                    tempo_changes.push((sample_pointer, usec_per_tick));
+                    println!("TEMPO CHANGE");
                 },
                 Event::Midi(c,MidiEvent::NoteOn { key, ..}) => {
                     //if *c == channel {
@@ -883,6 +908,7 @@ fn main() -> std::io::Result<()> {
         rl_audio.update_music_stream(&mut music);
         let dt = rl.get_frame_time();
         for (i,player) in track_players.iter_mut().enumerate() {
+            //if i != DEFAULT_TRACK { continue; }
             player.dt_counter += (dt * 1.0e6) as u32;
             while player.event_pointer < file.tracks[i].events.len() {
                 let (dt, event) = &file.tracks[i].events[player.event_pointer];
@@ -891,6 +917,7 @@ fn main() -> std::io::Result<()> {
                 match *event {
                     Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
                         tempo = t;
+                        println!("TEMPO CHANGE");
                     },
                     //Event::Midi(channel,MidiEvent::ProgramChange(program)) => {
                     //    //if channel == LISTEN_CHANNEL {
@@ -898,6 +925,7 @@ fn main() -> std::io::Result<()> {
                     //    //}
                     //}
                     Event::Midi(channel,MidiEvent::NoteOn { key, ..}) => {
+                        
                         key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len() ]);
                     }
                     Event::Midi(_, MidiEvent::NoteOff { key, ..}) => {
