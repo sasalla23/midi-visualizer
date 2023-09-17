@@ -59,44 +59,44 @@ enum MetaEvent {
     Unknown
 }
 
-#[derive(Debug, Clone,Copy,PartialEq,Eq)]
-enum Program {
-    AcousticGrandPiano,
-    SynthDrum,
-    SynthBass2,
-    Pad3,
-    Pad1,
-    ElectricGuitarMuted,
-    ElectricGuitarClean,
-    BrassSection,
-    StringEnsemble2,
-    StringEnsemble1,
-    Lead3,
-    VoiceOohs,
-    AltoSax,
-    ElectricPiano2,
-    Clavinet,
-    SynthBrass2,
-    SynthBrass1,
-    SynthStrings1,
-    FretlessBass,
-    Lead1,
-    PercussiveOrgan,
-    OrchestraHit,
-    SynthStrings2,
-    RockOrgan,
-    Lead2,
-    Trumpet,
-    ChoirAahs,
-    Viola,
-    Bassoon,
-    FrenchHorn,
-    Trombone,
-    Timpani,
-    Clarinet,
-    OrchestralHarp,
-    Piccolo
-}
+//#[derive(Debug, Clone,Copy,PartialEq,Eq)]
+//enum Program {
+//    AcousticGrandPiano,
+//    SynthDrum,
+//    SynthBass2,
+//    Pad3,
+//    Pad1,
+//    ElectricGuitarMuted,
+//    ElectricGuitarClean,
+//    BrassSection,
+//    StringEnsemble2,
+//    StringEnsemble1,
+//    Lead3,
+//    VoiceOohs,
+//    AltoSax,
+//    ElectricPiano2,
+//    Clavinet,
+//    SynthBrass2,
+//    SynthBrass1,
+//    SynthStrings1,
+//    FretlessBass,
+//    Lead1,
+//    PercussiveOrgan,
+//    OrchestraHit,
+//    SynthStrings2,
+//    RockOrgan,
+//    Lead2,
+//    Trumpet,
+//    ChoirAahs,
+//    Viola,
+//    Bassoon,
+//    FrenchHorn,
+//    Trombone,
+//    Timpani,
+//    Clarinet,
+//    OrchestralHarp,
+//    Piccolo
+//}
 
 #[derive(Debug, Clone,Copy,PartialEq,Eq)]
 enum ControllerMessage {
@@ -117,12 +117,18 @@ enum ControllerMessage {
     AllSoundOff,
     AllNotesOff,
     ModulationWheel(u8),
+    BreathControlMSB(u8),
+    PortamentoOnOff(bool),
+    PortamentoTimeMSB(u8),
+    PolyModeOnOffAllNotesOff,
+    GeneralPurposeController1MSB(u8),
+    DataEntryLSB(u8),
 }
 
 #[derive(Debug,Clone)]
 enum MidiEvent {
     ControlChange(ControllerMessage),
-    ProgramChange(Program),
+    ProgramChange(u8),
     PitchWheelChange(u32),
     NoteOn { key: u8, velocity: u8 },
     NoteOff { key: u8, velocity: u8 }
@@ -173,8 +179,101 @@ fn read_vlq(reader: &mut impl Read) -> Option<u32> {
     return Some(out);
 }
 
+fn read_midi_event(reader: &mut impl Read, midi_event_type: u8, first_byte: u8) -> Option<MidiEvent> {
+    Some(match midi_event_type {
+        0b1011 => { // Control Change
+            let mut control_change_data = [0];
+            reader.read(&mut control_change_data).ok()?;
+            MidiEvent::ControlChange(match first_byte {
+                0x79 => ControllerMessage::ResetAllControllers,
+                0x00 => ControllerMessage::BankSelectMSB(control_change_data[0]),
+                0x20 => ControllerMessage::BankSelectLSB(control_change_data[0]),
+                0x07 => ControllerMessage::ChannelVolumeMSB(control_change_data[0]),
+                0x0A => ControllerMessage::PanMSB(control_change_data[0]),
+                0x0B => ControllerMessage::ExpressionControllerMSB(control_change_data[0]),
+                0x5B => ControllerMessage::EffectsDepth1LSB(control_change_data[0]),
+                0x5D => ControllerMessage::EffectsDepth3LSB(control_change_data[0]),
+                0x63 => ControllerMessage::NonRegisteredParameterNumberMSB(control_change_data[0]),
+                0x62 => ControllerMessage::NonRegisteredParameterNumberLSB(control_change_data[0]),
+                0x65 => ControllerMessage::RegisteredParameterNumberMSB(control_change_data[0]),
+                0x64 => ControllerMessage::RegisteredParameterNumberLSB(control_change_data[0]),
+                0x06 => ControllerMessage::DataEntryMSB(control_change_data[0]),
+                0x40 => ControllerMessage::DamperPedalOn(control_change_data[0] >= 64),
+                0x78 => ControllerMessage::AllSoundOff,
+                0x7B => ControllerMessage::AllNotesOff,
+                0x01 => ControllerMessage::ModulationWheel(control_change_data[0]),
+                0x02 => ControllerMessage::BreathControlMSB(control_change_data[0]),
+                0x41 => ControllerMessage::PortamentoOnOff(control_change_data[0] >= 64),
+                0x05 => ControllerMessage::PortamentoTimeMSB(control_change_data[0]),
+                0x7E => ControllerMessage::PolyModeOnOffAllNotesOff,
+                0x12 => ControllerMessage::GeneralPurposeController1MSB(control_change_data[0]),
+                0x26 => ControllerMessage::DataEntryLSB(control_change_data[0]),
+                _ => todo!("{}", first_byte)
+            })
+        },
+        0b1100 => { // Program Change
+            MidiEvent::ProgramChange(first_byte)
+            //MidiEvent::ProgramChange(match program_data[0] { // Maybe use predefined array/hashmap/enum
+            //    0 => Program::AcousticGrandPiano,
+            //    118 => Program::SynthDrum,
+            //    39 => Program::SynthBass2,
+            //    90 => Program::Pad3,
+            //    28 => Program::ElectricGuitarMuted,
+            //    27 => Program::ElectricGuitarClean,
+            //    61 => Program::BrassSection,
+            //    48 => Program::StringEnsemble1,
+            //    82 => Program::Lead3,
+            //    53 => Program::VoiceOohs,
+            //    65 => Program::AltoSax,
+            //    5  => Program::ElectricPiano2,
+            //    49 => Program::StringEnsemble2,
+            //    7 => Program::Clavinet,
+            //    63 => Program::SynthBrass2,
+            //    88 => Program::Pad1,
+            //    62 => Program::SynthBrass1,
+            //    50 => Program::SynthStrings1,
+            //    35 => Program::FretlessBass,
+            //    80 => Program::Lead1,
+            //    17 => Program::PercussiveOrgan,
+            //    55 => Program::OrchestraHit,
+            //    51 => Program::SynthStrings2,
+            //    18 => Program::RockOrgan,
+            //    81 => Program::Lead2,
+            //    56 => Program::Trumpet,
+            //    52 => Program::ChoirAahs,
+            //    42 => Program::Viola,
+            //    70 => Program::Bassoon,
+            //    60 => Program::FrenchHorn,
+            //    57 => Program::Trombone,
+            //    47 => Program::Timpani,
+            //    71 => Program::Clarinet,
+            //    46 => Program::OrchestralHarp,
+            //    73 => Program::Piccolo,
+            //    _ => Program::AcousticGrandPiano,
+            //    //_ => todo!("{}", program_data[0])
+            //})
+        },
+        0b1110 => { // Pitch Wheel Change
+            let mut pitch_change_data = [0];
+            reader.read(&mut pitch_change_data).ok()?;
+            let pitch = ((pitch_change_data[0] as u32) << 7) | (first_byte as u32);
+            MidiEvent::PitchWheelChange(pitch)
+        }
+        0b1001 => { // Note On
+            let mut note_data = [0];
+            reader.read(&mut note_data).ok()?;
+            MidiEvent::NoteOn { key: first_byte, velocity: note_data[0] }
+        }
+        0b1000 => {
+            let mut note_data = [0];
+            reader.read(&mut note_data).ok()?;
+            MidiEvent::NoteOff { key: first_byte, velocity: note_data[0] }
+        }
+        _ => todo!("Midi type: {:b}", midi_event_type)
+    })
+}
 
-fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
+fn read_event(reader: &mut impl Read, last_status: &mut u8) -> Option<(u32, Event)> {
     let dt = read_vlq(reader)?;
     Some((dt, {
         let mut data = [0];
@@ -235,7 +334,7 @@ fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
                     let mut ignored_data = [0];
                     loop {
                         if reader.read(&mut ignored_data).ok()? == 0 { return None };
-                        if ignored_data[0] >> 7 == 1 {
+                        if ignored_data[0] == 0b11110111 {
                             break;
                         }
                     }
@@ -243,95 +342,20 @@ fn read_event(reader: &mut impl Read) -> Option<(u32, Event)> {
                 }
                 _ => todo!()
             }
-        } else { // Midi
+        } else if signal & 0b1000_0000 != 0 { // Midi
             let midi_event_type = signal >> 4;
             let channel = signal & 0xF;
-            Event::Midi(channel, match midi_event_type {
-                0b1011 => { // Control Change
-                    let mut control_change_data = [0;2];
-                    reader.read(&mut control_change_data).ok()?;
-                    MidiEvent::ControlChange(match control_change_data[0] {
-                        0x79 => ControllerMessage::ResetAllControllers,
-                        0x00 => ControllerMessage::BankSelectMSB(control_change_data[1]),
-                        0x20 => ControllerMessage::BankSelectLSB(control_change_data[1]),
-                        0x07 => ControllerMessage::ChannelVolumeMSB(control_change_data[1]),
-                        0x0A => ControllerMessage::PanMSB(control_change_data[1]),
-                        0x0B => ControllerMessage::ExpressionControllerMSB(control_change_data[1]),
-                        0x5B => ControllerMessage::EffectsDepth1LSB(control_change_data[1]),
-                        0x5D => ControllerMessage::EffectsDepth3LSB(control_change_data[1]),
-                        0x63 => ControllerMessage::NonRegisteredParameterNumberMSB(control_change_data[1]),
-                        0x62 => ControllerMessage::NonRegisteredParameterNumberLSB(control_change_data[1]),
-                        0x65 => ControllerMessage::RegisteredParameterNumberMSB(control_change_data[1]),
-                        0x64 => ControllerMessage::RegisteredParameterNumberLSB(control_change_data[1]),
-                        0x06 => ControllerMessage::DataEntryMSB(control_change_data[1]),
-                        0x40 => ControllerMessage::DamperPedalOn(control_change_data[1] >= 64),
-                        0x78 => ControllerMessage::AllSoundOff,
-                        0x7B => ControllerMessage::AllNotesOff,
-                        0x01 => ControllerMessage::ModulationWheel(control_change_data[1]),
-                        _ => todo!("{}", control_change_data[0])
-                    })
-                },
-                0b1100 => { // Program Change
-                    let mut program_data = [0];
-                    reader.read(&mut program_data).ok()?;
-                    MidiEvent::ProgramChange(match program_data[0] { // Maybe use predefined array/hashmap/enum
-                        0 => Program::AcousticGrandPiano,
-                        118 => Program::SynthDrum,
-                        39 => Program::SynthBass2,
-                        90 => Program::Pad3,
-                        28 => Program::ElectricGuitarMuted,
-                        27 => Program::ElectricGuitarClean,
-                        61 => Program::BrassSection,
-                        48 => Program::StringEnsemble1,
-                        82 => Program::Lead3,
-                        53 => Program::VoiceOohs,
-                        65 => Program::AltoSax,
-                        5  => Program::ElectricPiano2,
-                        49 => Program::StringEnsemble2,
-                        7 => Program::Clavinet,
-                        63 => Program::SynthBrass2,
-                        88 => Program::Pad1,
-                        62 => Program::SynthBrass1,
-                        50 => Program::SynthStrings1,
-                        35 => Program::FretlessBass,
-                        80 => Program::Lead1,
-                        17 => Program::PercussiveOrgan,
-                        55 => Program::OrchestraHit,
-                        51 => Program::SynthStrings2,
-                        18 => Program::RockOrgan,
-                        81 => Program::Lead2,
-                        56 => Program::Trumpet,
-                        52 => Program::ChoirAahs,
-                        42 => Program::Viola,
-                        70 => Program::Bassoon,
-                        60 => Program::FrenchHorn,
-                        57 => Program::Trombone,
-                        47 => Program::Timpani,
-                        71 => Program::Clarinet,
-                        46 => Program::OrchestralHarp,
-                        73 => Program::Piccolo,
-                        _ => Program::AcousticGrandPiano,
-                        //_ => todo!("{}", program_data[0])
-                    })
-                },
-                0b1110 => { // Pitch Wheel Change
-                    let mut pitch_change_data = [0;2];
-                    reader.read(&mut pitch_change_data).ok()?;
-                    let pitch = ((pitch_change_data[1] as u32) << 7) | (pitch_change_data[0] as u32);
-                    MidiEvent::PitchWheelChange(pitch)
-                }
-                0b1001 => { // Note On
-                    let mut note_data = [0;2];
-                    reader.read(&mut note_data).ok()?;
-                    MidiEvent::NoteOn { key: note_data[0], velocity: note_data[1] }
-                }
-                0b1000 => {
-                    let mut note_data = [0;2];
-                    reader.read(&mut note_data).ok()?;
-                    MidiEvent::NoteOff { key: note_data[0], velocity: note_data[1] }
-                }
-                _ => todo!("Signal: {:X}, Midi type: {:b}", signal, midi_event_type)
-            })
+            let mut first_byte_data = [0];
+            reader.read(&mut first_byte_data).ok()?;
+            *last_status = signal;
+            Event::Midi(channel, read_midi_event(reader, midi_event_type, first_byte_data[0])?)
+        } else {
+            let midi_event_type = *last_status >> 4;
+            //if midi_event_type == 0 {
+            //    println!("Last status: {:b}, current status: {:b}", *last_status, signal);
+            //}
+            let channel = *last_status & 0xF;
+            Event::Midi(channel, read_midi_event(reader, midi_event_type, signal)?)
         }
     }))
 }
@@ -392,7 +416,8 @@ fn read_chunk(reader: &mut impl Read) -> Chunk {
             reader.read(&mut content).unwrap();
             let mut track_reader = content.as_slice();
             let mut events = vec![];
-            while let Some(event) = read_event(&mut track_reader) {
+            let mut stored_signal = 0;
+            while let Some(event) = read_event(&mut track_reader, &mut stored_signal) {
                 //println!("Event: {:?}", &event);
                 events.push(event);
             }
@@ -682,8 +707,8 @@ struct PressedKeyInfo {
 
 #[derive(Debug,Clone)]
 enum NormalizedEvent {
-    KeyOn { key: u8, program: Program, channel: u8 },
-    KeyOff { key: u8, program: Program, channel: u8 }
+    KeyOn { key: u8, program: u8, channel: u8 },
+    KeyOff { key: u8, program: u8, channel: u8 }
 }
 
 // Store events with time in seconds
@@ -734,7 +759,7 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
     for track in 0..simult_tracks {
         
         //let track = DEFAULT_TRACK;
-        let mut channels = [(Program::AcousticGrandPiano,127);256];
+        let mut channels = [(0,127);256]; // (Program, Volume)
         let mut pressed_keys = Vec::<PressedKeyInfo>::new();
         let mut sample_pointer = 0;
 
@@ -755,40 +780,83 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
                 dt_float -= tick_per_sample;
                 let mut s = 0.0;
                 for key_info in pressed_keys.iter_mut() {
-                    
-                        let note_function = match channels[key_info.channel as usize].0 {
-                            //Program::AcousticGrandPiano => note_sine(*t,i),
-                            Program::StringEnsemble2
-                                | Program::StringEnsemble1
-                                | Program::SynthStrings1
-                                | Program::SynthStrings2
-                                | Program::Lead1
-                                | Program::BrassSection
-                                | Program::SynthBrass1
-                                | Program::SynthBrass2
-                                => note_square,
-                            Program::SynthDrum
-                                | Program::Pad1
-                                | Program::Pad3
-                                | Program::OrchestraHit
-                                => note_drum,
-                            Program::SynthBass2
-                                | Program::FretlessBass
-                                | Program::AltoSax
-                                | Program::Lead2
-                                => note_saw_tooth,
-                            _ => note_sine
+                        let program = channels[key_info.channel as usize].0;
+                        let note_function = if program <= 7 { // piano
+                            note_sine
+                        } else if 8 <= program && program <= 15 { // Chromatic Percussion
+                            note_sine
+                        } else if 16 <= program && program <= 23 { // Organ
+                            note_sine
+                        } else if 24 <= program && program <= 31 { // Guitar
+                            note_sine
+                        } else if 32 <= program && program <= 39 { // Bass
+                            note_saw_tooth
+                        } else if 40 <= program && program <= 47 { // Strings
+                            note_square
+                        } else if 48 <= program && program <= 55 { // Ensemble
+                            note_square
+                        } else if 56 <= program && program <= 63 { // Brass
+                            note_saw_tooth
+                        } else if 64 <= program && program <= 71 { // Reed
+                            note_saw_tooth
+                        } else if 72 <= program && program <= 79 { // Pipe
+                            note_square
+                        } else if 80 <= program && program <= 87 { // Synth Lead
+                            note_square
+                        } else if 88 <= program && program <= 95 { // Synth Pad
+                            note_sine
+                        } else if 96 <= program && program <= 103 { // Synth Effects
+                            note_drum
+                        } else if 104 <= program && program <= 111 { // Ethnic
+                            note_sine
+                        } else if 112 <= program && program <= 119 { // Percussive
+                            note_drum
+                        } else if 120 <= program && program <= 127 { // Sound Effects
+                            note_drum
+                        } else {
+                            unreachable!()
                         };
+                        //    //Program::AcousticGrandPiano => note_sine(*t,i),
+                        //    Program::StringEnsemble2
+                        //        | Program::StringEnsemble1
+                        //        | Program::SynthStrings1
+                        //        | Program::SynthStrings2
+                        //        | Program::Lead1
+                        //        | Program::BrassSection
+                        //        | Program::SynthBrass1
+                        //        | Program::SynthBrass2
+                        //        => note_square,
+                        //    Program::SynthDrum
+                        //        | Program::Pad1
+                        //        | Program::Pad3
+                        //        | Program::OrchestraHit
+                        //        => note_drum,
+                        //    Program::SynthBass2
+                        //        | Program::FretlessBass
+                        //        | Program::AltoSax
+                        //        | Program::Lead2
+                        //        => note_saw_tooth,
+                        //    _ => note_sine
+                        //};
                         s += note_function(key_info.elapsed_time, key_info.key as usize) * channels[key_info.channel as usize].1 as f64 / 127.0;
                         key_info.elapsed_time += sec_per_sample;
                 }
                 s /= 10.0; //pressed_keys.len() as f64;
                 //writer.write_sample((i16::MAX as f64 * s) as i16).unwrap();
+                if s.abs() >= 1.0 {
+                    s = s / s.abs();
+                }
                 let sample_value = (i16::MAX as f64 * s) as i16;
                 if sample_pointer >= sample_buffer.len() {
                     sample_buffer.push(sample_value);
                 } else {
-                    sample_buffer[sample_pointer] += sample_value;
+                    if sample_buffer[sample_pointer] == 0 {
+                        sample_buffer[sample_pointer] = sample_value;
+                    } else if (sample_buffer[sample_pointer] as i64 + sample_value as i64).abs() >= i16::MAX as i64 {
+                        sample_buffer[sample_pointer] = sample_buffer[sample_pointer] / sample_buffer[sample_pointer].abs() * i16::MAX;
+                    } else {
+                        sample_buffer[sample_pointer] += sample_value;
+                    }
                 }
                 for (sample_index, usecs) in tempo_changes.iter() {
                     if sample_pointer == *sample_index {
@@ -811,16 +879,9 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
                     };
                     //assert!(track==0);
                     tempo_changes.push((sample_pointer, usec_per_tick));
-                    println!("TEMPO CHANGE");
+                    //println!("TEMPO CHANGE");
                 },
-                Event::Midi(c,MidiEvent::NoteOn { key, ..}) => {
-                    //if *c == channel {
-                        pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key });
-                      // println!("HHHHHHSDHFSDFSD?????");
-                    //}
-                    noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOn { key: *key, program: channels[*c as usize].0, channel: *c }));
-                }
-                Event::Midi(c,MidiEvent::NoteOff { key, .. }) => {
+                Event::Midi(c,MidiEvent::NoteOff { key, .. }) | Event::Midi(c, MidiEvent::NoteOn { key, velocity: 0 }) => {
                     for i in 0..pressed_keys.len() {
                         if pressed_keys[i].channel == *c && pressed_keys[i].key == *key {
                             pressed_keys.remove(i);
@@ -829,6 +890,14 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
                     }
                     noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOff { key: *key, program: channels[*c as usize].0, channel: *c }));
                 },
+                Event::Midi(c,MidiEvent::NoteOn { key, ..}) => {
+                    //if *c == channel {
+                        pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key });
+                      // println!("HHHHHHSDHFSDFSD?????");
+                    //}
+                    noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOn { key: *key, program: channels[*c as usize].0, channel: *c }));
+                }
+                
                 Event::Midi(c, MidiEvent::ControlChange(ControllerMessage::ChannelVolumeMSB(new_volume))) => {
                     channels[*c as usize].1 = *new_volume;
                 },
@@ -839,6 +908,7 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> 
             }
         }
     }
+    //println!("END_OF_GENERATION");
     for s in sample_buffer {
         writer.write_sample(s).unwrap();
     }

@@ -8,9 +8,10 @@
 
 ## Midi Parser
 - [ ] Handle more meta events
-- [ ] Handle missing signal bytes
+- [x] Handle missing signal bytes
 
 ## Visualization
 - [ ] Preview pressed keys
 - [ ] VFX
 - [ ] Properly choose colors (Maybe via user input)
+- [ ] Show rendering progress before starting the visualization
