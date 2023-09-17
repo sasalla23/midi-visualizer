@@ -1,6 +1,6 @@
 # TODO
 ## Audio Generation
-- [ ] Handle tempo changes correctly
+- [x] Handle tempo changes correctly
 - [ ] Handle key press velocity
 - [ ] Let user select waveform for instruments
 - [ ] More waveforms

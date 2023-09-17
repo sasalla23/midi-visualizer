@@ -678,9 +678,29 @@ struct PressedKeyInfo {
     key: u8,
 }
 
+
+
+#[derive(Debug,Clone)]
+enum NormalizedEvent {
+    KeyOn { key: u8, program: Program, channel: u8 },
+    KeyOff { key: u8, program: Program, channel: u8 }
+}
+
+// Store events with time in seconds
+#[derive(Debug, Clone)]
+struct NormalizedTrack {
+    events: Vec<(f64, NormalizedEvent)>,
+}
+
+impl NormalizedTrack {
+    fn new() -> Self {
+        Self { events: Vec::new() }
+    }
+}
+
 const DEFAULT_TRACK: usize = 0;
 
-fn generate_audio(file: &MidiFile, wav_file_path: &str) {
+fn generate_audio(file: &MidiFile, wav_file_path: &str) -> Vec<NormalizedTrack> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 44100,
@@ -708,6 +728,8 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
     } else {
         todo!("Other divisions")
     };
+
+    let mut noramalized_tracks = vec![NormalizedTrack::new(); simult_tracks];
 
     for track in 0..simult_tracks {
         
@@ -796,6 +818,7 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
                         pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key });
                       // println!("HHHHHHSDHFSDFSD?????");
                     //}
+                    noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOn { key: *key, program: channels[*c as usize].0, channel: *c }));
                 }
                 Event::Midi(c,MidiEvent::NoteOff { key, .. }) => {
                     for i in 0..pressed_keys.len() {
@@ -804,6 +827,7 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
                             break;
                         }
                     }
+                    noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOff { key: *key, program: channels[*c as usize].0, channel: *c }));
                 },
                 Event::Midi(c, MidiEvent::ControlChange(ControllerMessage::ChannelVolumeMSB(new_volume))) => {
                     channels[*c as usize].1 = *new_volume;
@@ -819,6 +843,7 @@ fn generate_audio(file: &MidiFile, wav_file_path: &str) {
         writer.write_sample(s).unwrap();
     }
     writer.finalize().unwrap();
+    noramalized_tracks
 }
 
 
@@ -838,15 +863,27 @@ const COLORS: [Color; 8] = [
     Color::SKYBLUE
 ];
 
+//#[derive(Debug,Clone,Copy)]
+//struct TrackPlayer {
+//    event_pointer: usize,
+//    dt_counter: u32,
+//}
+//
+//impl TrackPlayer {
+//    fn new() -> Self {
+//        Self { event_pointer: 0, dt_counter: 0 }
+//    }
+//}
+
 #[derive(Debug,Clone,Copy)]
 struct TrackPlayer {
     event_pointer: usize,
-    dt_counter: u32,
+    elapsed_time: f64,
 }
 
 impl TrackPlayer {
     fn new() -> Self {
-        Self { event_pointer: 0, dt_counter: 0 }
+        Self { event_pointer: 0, elapsed_time: 0.0 }
     }
 }
 
@@ -861,7 +898,7 @@ fn main() -> std::io::Result<()> {
 
     let file =  MidiFile::read_midi(&args[1])?;
     let wav_file_path = args[2].clone();
-    generate_audio(&file, &wav_file_path);
+    let normed_tracks = generate_audio(&file, &wav_file_path);
     assert!(file.header.format != Format::SEQUENCE_TRACK);
 
     const WINDOW_WIDTH: i32 = 1280;
@@ -879,18 +916,18 @@ fn main() -> std::io::Result<()> {
     rl.set_target_fps(FPS);
     
     
-    let mut tempo = STANDARD_TEMPO;
+    //let mut tempo = STANDARD_TEMPO;
 
     //let mut ticks_per_frame = if let Division::TicksPerQuarter(ticks) = file.header.division {
     //    get_ticks_per_frame(FPS, tempo, ticks)
     //} else {
     //    todo!("Other divisions")
     //};
-    let ticks_per_quarter = if let Division::TicksPerQuarter(ticks) = file.header.division {
-        ticks
-    } else {
-        todo!("Other divisions")
-    };
+    //let ticks_per_quarter = if let Division::TicksPerQuarter(ticks) = file.header.division {
+    //    ticks
+    //} else {
+    //    todo!("Other divisions")
+    //};
     let simult_tracks = file.get_simult_track_count(); 
     let mut track_players = vec![TrackPlayer::new(); simult_tracks as usize];
     
@@ -906,40 +943,61 @@ fn main() -> std::io::Result<()> {
         //    queue_timer = 0;
         //}
         rl_audio.update_music_stream(&mut music);
-        let dt = rl.get_frame_time();
-        for (i,player) in track_players.iter_mut().enumerate() {
-            //if i != DEFAULT_TRACK { continue; }
-            player.dt_counter += (dt * 1.0e6) as u32;
-            while player.event_pointer < file.tracks[i].events.len() {
-                let (dt, event) = &file.tracks[i].events[player.event_pointer];
-                let dt_time = get_tick_time(*dt, tempo, ticks_per_quarter);
-                if player.dt_counter < dt_time { break; }
-                match *event {
-                    Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
-                        tempo = t;
-                        println!("TEMPO CHANGE");
-                    },
-                    //Event::Midi(channel,MidiEvent::ProgramChange(program)) => {
-                    //    //if channel == LISTEN_CHANNEL {
-                    //    //    println!("Program for channel {}: {:?}", channel, program);
-                    //    //}
-                    //}
-                    Event::Midi(channel,MidiEvent::NoteOn { key, ..}) => {
-                        
-                        key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len() ]);
-                    }
-                    Event::Midi(_, MidiEvent::NoteOff { key, ..}) => {
+        let dt = rl.get_frame_time() as f64;
+        'outer: for (i, player) in track_players.iter_mut().enumerate() {
+            if player.event_pointer >= normed_tracks[i].events.len() {
+                continue 'outer;
+            }
+            player.elapsed_time += dt;
+            while player.elapsed_time > normed_tracks[i].events[player.event_pointer].0 {
+                match normed_tracks[i].events[player.event_pointer].1 {
+                    NormalizedEvent::KeyOff { key, .. } => {
                         key_map[key as usize] = None;
-                    }
-                    _ => {}
+                    },
+                    NormalizedEvent::KeyOn { key, channel, .. } => {
+                        key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len()]);
+                    },
                 }
-                
-                
-                //event_queue.push_front(event.clone());
-                player.dt_counter -= dt_time;
                 player.event_pointer += 1;
+                if player.event_pointer >= normed_tracks[i].events.len() {
+                    continue 'outer;
+                }
             }
         }
+        //let dt = rl.get_frame_time();
+        //for (i,player) in track_players.iter_mut().enumerate() {
+        //    //if i != DEFAULT_TRACK { continue; }
+        //    player.dt_counter += (dt * 1.0e6) as u32;
+        //    while player.event_pointer < file.tracks[i].events.len() {
+        //        let (dt, event) = &file.tracks[i].events[player.event_pointer];
+        //        let dt_time = get_tick_time(*dt, tempo, ticks_per_quarter);
+        //        if player.dt_counter < dt_time { break; }
+        //        match *event {
+        //            Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
+        //                tempo = t;
+        //                println!("TEMPO CHANGE");
+        //            },
+        //            //Event::Midi(channel,MidiEvent::ProgramChange(program)) => {
+        //            //    //if channel == LISTEN_CHANNEL {
+        //            //    //    println!("Program for channel {}: {:?}", channel, program);
+        //            //    //}
+        //            //}
+        //            Event::Midi(channel,MidiEvent::NoteOn { key, ..}) => {
+        //                
+        //                key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len() ]);
+        //            }
+        //            Event::Midi(_, MidiEvent::NoteOff { key, ..}) => {
+        //                key_map[key as usize] = None;
+        //            }
+        //            _ => {}
+        //        }
+        //        
+        //        
+        //        //event_queue.push_front(event.clone());
+        //        player.dt_counter -= dt_time;
+        //        player.event_pointer += 1;
+        //    }
+        //}
         //dt_counter = 0;
         
         if rl.is_key_pressed(KeyboardKey::KEY_B) {
