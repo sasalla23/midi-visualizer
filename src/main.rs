@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone,Copy,PartialEq, Eq)]
 enum Format {
-    SINGLE_TRACK,
-    SIMUL_TRACK,
-    SEQUENCE_TRACK
+    SingleTrack,
+    SimulTrack,
+    SequenceTrack
 }
 
 //#[derive(Debug, Clone,Copy,PartialEq, Eq)]
@@ -389,9 +389,9 @@ fn read_chunk(reader: &mut impl Read) -> Chunk {
             let mut data = [0_u8;2];
             reader.read(&mut data).unwrap();
             let format = match u16::from_be_bytes(data.clone()) {
-                0 => Format::SINGLE_TRACK,
-                1 => Format::SIMUL_TRACK,
-                2 => Format::SEQUENCE_TRACK,
+                0 => Format::SingleTrack,
+                1 => Format::SimulTrack,
+                2 => Format::SequenceTrack,
                 x => {
                     eprintln!("Unknown format {}", x);
                     return Chunk::None
@@ -460,9 +460,9 @@ impl MidiFile {
 
     fn get_simult_track_count(&self) -> usize {
         match self.header.format {
-            Format::SINGLE_TRACK => 1,
-            Format::SIMUL_TRACK => self.header.ntrks as usize,
-            Format::SEQUENCE_TRACK => 1,
+            Format::SingleTrack => 1,
+            Format::SimulTrack => self.header.ntrks as usize,
+            Format::SequenceTrack => 1,
         }
     }
 }
@@ -654,9 +654,9 @@ fn draw_keyboard(d: &mut impl RaylibDraw, bounds: Rectangle, key_map: [Option<Co
 //    (ticks_per_quarter as f32 / (tempo as f32 * 1.0e-6) / (fps as f32)) as u32
 //}
 
-fn get_tick_time(ticks: u32, tempo: u32, ticks_per_quarter: u32) -> u32 {
-    (tempo as u64 * ticks as u64 / ticks_per_quarter as u64) as u32
-}
+//fn get_tick_time(ticks: u32, tempo: u32, ticks_per_quarter: u32) -> u32 {
+//    (tempo as u64 * ticks as u64 / ticks_per_quarter as u64) as u32
+//}
 
 
 use hound;
@@ -726,10 +726,11 @@ impl NormalizedTrack {
     }
 }
 
-const DEFAULT_TRACK: usize = 0;
+//const DEFAULT_TRACK: usize = 0;
 
 use std::thread;
-use std::sync::mpsc;
+//use std::sync::mpsc;
+use std::sync::Mutex;
 
 #[derive(Clone, Debug)]
 struct ProgressInfo {
@@ -738,7 +739,13 @@ struct ProgressInfo {
     result: Option<Vec<NormalizedTrack>>,
 }
 
-fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, sender: mpsc::Sender<ProgressInfo>) {
+impl ProgressInfo {
+    fn new() -> Self {
+        Self { track: 0, track_progress: 0.0, result: None }
+    }
+}
+
+fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<Mutex<ProgressInfo>>) {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 44100,
@@ -755,7 +762,7 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, sender: mpsc::Sender
 
     let simult_tracks: usize = file.get_simult_track_count();
 
-    assert!(file.header.format != Format::SEQUENCE_TRACK);
+    assert!(file.header.format != Format::SequenceTrack);
 
     let mut sample_buffer = Vec::<i16>::new();
     let mut tempo_changes = Vec::new();
@@ -768,9 +775,12 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, sender: mpsc::Sender
     };
 
     let mut noramalized_tracks = vec![NormalizedTrack::new(); simult_tracks];
-    let mut progress_info = ProgressInfo { track: 0, track_progress: 0.0, result: None };
+
     for track in 0..simult_tracks {
-        progress_info.track = track;
+        {
+            let mut pi = progress_info.lock().unwrap();
+            pi.track = track;
+        }
         //let track = DEFAULT_TRACK;
         let mut channels = [(0,127);256]; // (Program, Volume)
         let mut pressed_keys = Vec::<PressedKeyInfo>::new();
@@ -783,7 +793,10 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, sender: mpsc::Sender
         }
 
         for (event_index, (dt,event)) in file.tracks[track].events.iter().enumerate() {
-            progress_info.track_progress = event_index as f64 / file.tracks[track].events.len() as f64;
+            {
+                let mut pi = progress_info.lock().unwrap();
+                pi.track_progress = event_index as f64 / file.tracks[track].events.len() as f64;
+            }
             //let elapsing_samples = usec_per_tick as u64 * *dt as u64 * spec.sample_rate as u64 / 1_000_000;
             let sec_per_sample = 1.0 / spec.sample_rate as f64;
             let mut dt_float = *dt as f64;
@@ -920,7 +933,6 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, sender: mpsc::Sender
                 }
                 _ => {}
             }
-            if event_index % 100 == 0 { sender.send(progress_info.clone()).unwrap(); }
         }
     }
     //println!("END_OF_GENERATION");
@@ -928,8 +940,9 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, sender: mpsc::Sender
         writer.write_sample(s).unwrap();
     }
     writer.finalize().unwrap();
-    progress_info.result = Some(noramalized_tracks);
-    sender.send(progress_info).unwrap();
+
+    let mut pi = progress_info.lock().unwrap();
+    pi.result = Some(noramalized_tracks);
 }
 
 
@@ -963,13 +976,12 @@ const COLORS: [Color; 8] = [
 
 #[derive(Debug,Clone,Copy)]
 struct TrackPlayer {
-    event_pointer: usize,
-    elapsed_time: f64,
+    event_pointer: usize
 }
 
 impl TrackPlayer {
     fn new() -> Self {
-        Self { event_pointer: 0, elapsed_time: 0.0 }
+        Self { event_pointer: 0 }
     }
 }
 
@@ -989,18 +1001,17 @@ fn main() -> std::io::Result<()> {
     }
 
     let file =  Arc::new(MidiFile::read_midi(&args[1])?);
-    
-
     let wav_file_path = args[2].clone();
 
     let mut state = State::RENDERING;
-    let (sender,receiver) = mpsc::channel();
+    let progress_info = Arc::new(Mutex::new(ProgressInfo::new()));
     {
         let file_pointer = Arc::clone(&file);
         let wav_file_path = wav_file_path.clone();
-        thread::spawn(move || generate_audio(file_pointer, &wav_file_path, sender));
+        let progress_info_pointer = Arc::clone(&progress_info);
+        thread::spawn(move || generate_audio(file_pointer, &wav_file_path, progress_info_pointer));
     }
-    assert!(file.header.format != Format::SEQUENCE_TRACK);
+    assert!(file.header.format != Format::SequenceTrack);
 
     const WINDOW_WIDTH: i32 = 1280;
     const WINDOW_HEIGHT: i32 = 720;
@@ -1036,7 +1047,7 @@ fn main() -> std::io::Result<()> {
     let mut track_players = vec![TrackPlayer::new(); simult_tracks as usize];
     
     let mut key_map  = [None; 128];
-    let mut progress_info = ProgressInfo { track: 0, track_progress: 0.0, result: None };
+    //let mut progress_info = ProgressInfo { track: 0, track_progress: 0.0, result: None };
 
     
     
@@ -1049,36 +1060,35 @@ fn main() -> std::io::Result<()> {
         match state {
         //rl_audio.update_music_stream(&mut music);
             State::VISUALIZING => {
-                
-                if rl_audio.is_music_playing(music.as_ref().unwrap()) {
-                    let dt = rl.get_frame_time() as f64;
-                    'outer: for (i, player) in track_players.iter_mut().enumerate() {
-                        if player.event_pointer >= normed_tracks.as_ref().unwrap()[i].events.len() {
+                let unwrapped_music = music.as_mut().unwrap();
+                let unwrapped_normed_tracks = normed_tracks.as_ref().unwrap();
+                rl_audio.update_music_stream(unwrapped_music);
+                let elapsed_time = rl_audio.get_music_time_played(unwrapped_music) as f64;
+                //let dt = rl.get_frame_time() as f64;
+                'outer: for (i, player) in track_players.iter_mut().enumerate() {
+                    
+                    if player.event_pointer >= unwrapped_normed_tracks[i].events.len() {
+                        continue 'outer;
+                    }
+
+                    while elapsed_time > unwrapped_normed_tracks[i].events[player.event_pointer].0 {
+                        match unwrapped_normed_tracks[i].events[player.event_pointer].1 {
+                            NormalizedEvent::KeyOff { key, .. } => {
+                                key_map[key as usize] = None;
+                            },
+                            NormalizedEvent::KeyOn { key, channel, .. } => {
+                                key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len()]);
+                            },
+                        }
+                        player.event_pointer += 1;
+                        if player.event_pointer >= unwrapped_normed_tracks[i].events.len() {
                             continue 'outer;
                         }
-                        
-                        while player.elapsed_time > normed_tracks.as_ref().unwrap()[i].events[player.event_pointer].0 {
-                            match normed_tracks.as_ref().unwrap()[i].events[player.event_pointer].1 {
-                                NormalizedEvent::KeyOff { key, .. } => {
-                                    key_map[key as usize] = None;
-                                },
-                                NormalizedEvent::KeyOn { key, channel, .. } => {
-                                    key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len()]);
-                                },
-                            }
-                            player.event_pointer += 1;
-                            if player.event_pointer >= normed_tracks.as_ref().unwrap()[i].events.len() {
-                                continue 'outer;
-                            }
-                        
-                        }
-                        player.elapsed_time += dt;
+                    
                     }
+                    
                 }
-                if !rl_audio.is_music_playing(music.as_ref().unwrap()) {
-                    rl_audio.play_music_stream(&mut music.as_mut().unwrap());
-                }
-                rl_audio.update_music_stream(&mut music.as_mut().unwrap());
+                
 
                 if rl.is_key_pressed(KeyboardKey::KEY_B) {
                     rl.take_screenshot(&thread, "screenshot.png");
@@ -1092,16 +1102,26 @@ fn main() -> std::io::Result<()> {
             },
             State::RENDERING => {
                 
-                match receiver.recv_timeout(std::time::Duration::from_secs_f64(1.0 / FPS as f64)) {
-                    Ok(ProgressInfo { result: Some(ntracks), .. }) => {
-                        normed_tracks = Some(ntracks);
+                //match receiver.recv_timeout(std::time::Duration::from_secs_f64(1.0 / FPS as f64)) {
+                //    Ok(ProgressInfo { result: Some(ntracks), .. }) => {
+                //        normed_tracks = Some(ntracks);
+                //        state = State::VISUALIZING;
+                //        music = Some(Music::load_music_stream(&thread, &wav_file_path).unwrap());
+                //        rl_audio.play_music_stream(&mut music.as_mut().unwrap());
+                //    },
+                //    Ok(info) => {
+                //        progress_info = info;
+                //    },
+                //    _ => {}
+                //}
+                {
+                    let pi = progress_info.lock().unwrap();
+                    if let Some(tracks) = &pi.result {
+                        normed_tracks = Some(tracks.clone());
                         state = State::VISUALIZING;
                         music = Some(Music::load_music_stream(&thread, &wav_file_path).unwrap());
-                    },
-                    Ok(info) => {
-                        progress_info = info;
-                    },
-                    _ => {}
+                        rl_audio.play_music_stream(&mut music.as_mut().unwrap());
+                    }
                 }
 
                 const PROGRESS_RECT_WIDTH: f32 = WINDOW_WIDTH as f32 / 3.0 * 2.0;
@@ -1110,11 +1130,14 @@ fn main() -> std::io::Result<()> {
                 let mut d = rl.begin_drawing(&thread);
                 d.clear_background(Color::BLACK);
 
-                d.draw_text(&format!("Track: {}/{}, Progress: {}", progress_info.track, file.header.ntrks, progress_info.track_progress), 23, 23, 23, Color::WHITE);
-                let mut progress_rect = Rectangle::new(WINDOW_WIDTH as f32 / 2.0 - PROGRESS_RECT_WIDTH / 2.0, WINDOW_HEIGHT as f32 / 2.0 - PROGRESS_RECT_HEIGHT / 2.0, PROGRESS_RECT_WIDTH, PROGRESS_RECT_HEIGHT);
-                d.draw_rectangle_rec(progress_rect, Color::GRAY);
-                progress_rect.width *= progress_info.track_progress as f32;
-                d.draw_rectangle_rec(progress_rect, Color::GREEN);
+                {
+                    let pi = progress_info.lock().unwrap();
+                    d.draw_text(&format!("Track: {}/{}, Progress: {}", pi.track, file.header.ntrks, pi.track_progress), 23, 23, 23, Color::WHITE);
+                    let mut progress_rect = Rectangle::new(WINDOW_WIDTH as f32 / 2.0 - PROGRESS_RECT_WIDTH / 2.0, WINDOW_HEIGHT as f32 / 2.0 - PROGRESS_RECT_HEIGHT / 2.0, PROGRESS_RECT_WIDTH, PROGRESS_RECT_HEIGHT);
+                    d.draw_rectangle_rec(progress_rect, Color::GRAY);
+                    progress_rect.width *= pi.track_progress as f32;
+                    d.draw_rectangle_rec(progress_rect, Color::GREEN);
+                }
             }
         }
         //let dt = rl.get_frame_time();
