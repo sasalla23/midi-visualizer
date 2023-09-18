@@ -1020,6 +1020,8 @@ fn main() -> std::io::Result<()> {
 
     set_trace_log(TraceLogLevel::LOG_NONE);
     let (mut rl, thread) = raylib::init().width(WINDOW_WIDTH).height(WINDOW_HEIGHT).title("Mididi").build();
+    let elif_image = Image::load_image("elif.png").unwrap();
+    let elif_texture = rl.load_texture_from_image(&thread, &elif_image).unwrap();
 
     let mut rl_audio = RaylibAudio::init_audio_device();
     let mut music = None;
@@ -1048,7 +1050,7 @@ fn main() -> std::io::Result<()> {
     
     let mut key_map  = [None; 128];
     //let mut progress_info = ProgressInfo { track: 0, track_progress: 0.0, result: None };
-
+    
     
     
     while !rl.window_should_close() {
@@ -1097,6 +1099,7 @@ fn main() -> std::io::Result<()> {
                 let mut d = rl.begin_drawing(&thread);
                 d.clear_background(Color::BLACK);
                 //d.draw_text("Hello World", 23, 23, 23, Color::RAYWHITE);
+                d.draw_texture_ex(&elif_texture, Vector2::new(-224.0,-379.0), 0.0, 4.0, Color::WHITE);
                 let key_board_bounds = Rectangle::new(0.0, WINDOW_HEIGHT as f32 * 7.0/8.0, WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32 / 8.0);
                 draw_keyboard(&mut d, key_board_bounds, key_map);
             },
