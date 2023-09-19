@@ -1,10 +1,9 @@
+use std::fmt::Display;
 use std::fs::File;
-//use std::io::BufReader;
 use std::io::prelude::*;
 use std::str;
 use std::io;
 use std::sync::Arc;
-//use std::collections::VecDeque;
 
 #[derive(Debug, Clone,Copy,PartialEq, Eq)]
 enum Format {
@@ -12,37 +11,6 @@ enum Format {
     SimulTrack,
     SequenceTrack
 }
-
-//#[derive(Debug, Clone,Copy,PartialEq, Eq)]
-//enum Key {
-//    C = 0, CS, D, DS, E, F, FS, G, GS, A, AS, B //, KEY_COUNT
-//}
-//
-//fn key_index(key: Key, octave: i8) -> usize {
-//    (octave + 1) as usize * 12 + key as usize
-//}
-
-//impl TryFrom<u8> for Key {
-//    type Error = String;
-//
-//    fn try_from(value: u8) -> Result<Self, Self::Error> {
-//        match value {
-//            0 => Ok(Self::C),
-//            1 => Ok(Self::CS),
-//            2 => Ok(Self::D),
-//            3 => Ok(Self::DS),
-//            4 => Ok(Self::E),
-//            5 => Ok(Self::F),
-//            6 => Ok(Self::FS),
-//            7 => Ok(Self::G),
-//            8 => Ok(Self::GS),
-//            9 => Ok(Self::A),
-//            10 => Ok(Self::AS),
-//            11 => Ok(Self::B),
-//            _ => Err(String::from("Invalid Value for key"))
-//        }
-//    }
-//}
 
 #[derive(Debug, Clone,Copy,PartialEq,Eq)]
 enum Division {
@@ -59,45 +27,6 @@ enum MetaEvent {
     EndOfTrack,
     Unknown
 }
-
-//#[derive(Debug, Clone,Copy,PartialEq,Eq)]
-//enum Program {
-//    AcousticGrandPiano,
-//    SynthDrum,
-//    SynthBass2,
-//    Pad3,
-//    Pad1,
-//    ElectricGuitarMuted,
-//    ElectricGuitarClean,
-//    BrassSection,
-//    StringEnsemble2,
-//    StringEnsemble1,
-//    Lead3,
-//    VoiceOohs,
-//    AltoSax,
-//    ElectricPiano2,
-//    Clavinet,
-//    SynthBrass2,
-//    SynthBrass1,
-//    SynthStrings1,
-//    FretlessBass,
-//    Lead1,
-//    PercussiveOrgan,
-//    OrchestraHit,
-//    SynthStrings2,
-//    RockOrgan,
-//    Lead2,
-//    Trumpet,
-//    ChoirAahs,
-//    Viola,
-//    Bassoon,
-//    FrenchHorn,
-//    Trombone,
-//    Timpani,
-//    Clarinet,
-//    OrchestralHarp,
-//    Piccolo
-//}
 
 #[derive(Debug, Clone,Copy,PartialEq,Eq)]
 enum ControllerMessage {
@@ -151,8 +80,7 @@ struct TrackChunk {
 enum Chunk {
     Header(HeaderChunk),
     Track(TrackChunk),
-    Unknown,
-    None
+    Unknown
 }
 
 #[derive(Debug,Clone)]
@@ -162,12 +90,48 @@ enum Event {
     Meta(MetaEvent)
 }
 
-fn read_vlq(reader: &mut impl Read) -> Option<u32> {
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+enum MidiErrorType {
+    IO,
+    InvalidMidi
+}
+
+#[derive(Debug, Clone)]
+struct MidiError {
+    message: String,
+    error_type: MidiErrorType
+}
+
+impl Display for MidiError {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(fmt, "{:?}Error: {}", self.error_type, self.message)
+    }
+}
+
+impl std::error::Error for MidiError {}
+
+fn read_bytes(reader: &mut impl Read, buf: &mut [u8]) -> Result<(),MidiError> {
+    match reader.read(buf) {
+        Ok(length) => {
+            if length == 0 {
+                Err(MidiError { message: String::from("Unexpectedly reached end of file"), error_type: MidiErrorType::InvalidMidi })
+            } else {
+                Ok(())
+            }
+        },
+        Err(err) => {
+            Err(MidiError { message: err.to_string(), error_type: MidiErrorType::IO })
+        }
+    }
+}
+
+// Read a variable length quantity as used in midi files
+fn read_vlq(reader: &mut impl Read) -> Result<u32,MidiError> {
     let mut out = 0;
     let mut buffer = [0];
     
     loop {
-        if reader.read(&mut buffer).unwrap() == 0 { return None };
+        read_bytes(reader, &mut buffer)?;
         out <<= 7;
         if buffer[0] & (1<<7) == 0 {
             out |= buffer[0] as u32;
@@ -177,14 +141,14 @@ fn read_vlq(reader: &mut impl Read) -> Option<u32> {
             out |= buffer[0] as u32;
         }
     }
-    return Some(out);
+    return Ok(out);
 }
 
-fn read_midi_event(reader: &mut impl Read, midi_event_type: u8, first_byte: u8) -> Option<MidiEvent> {
-    Some(match midi_event_type {
+fn read_midi_event(reader: &mut impl Read, midi_event_type: u8, first_byte: u8) -> Result<MidiEvent,MidiError> {
+    Ok(match midi_event_type {
         0b1011 => { // Control Change
             let mut control_change_data = [0];
-            reader.read(&mut control_change_data).ok()?;
+            read_bytes(reader,&mut control_change_data)?;
             MidiEvent::ControlChange(match first_byte {
                 0x79 => ControllerMessage::ResetAllControllers,
                 0x00 => ControllerMessage::BankSelectMSB(control_change_data[0]),
@@ -214,88 +178,54 @@ fn read_midi_event(reader: &mut impl Read, midi_event_type: u8, first_byte: u8) 
         },
         0b1100 => { // Program Change
             MidiEvent::ProgramChange(first_byte)
-            //MidiEvent::ProgramChange(match program_data[0] { // Maybe use predefined array/hashmap/enum
-            //    0 => Program::AcousticGrandPiano,
-            //    118 => Program::SynthDrum,
-            //    39 => Program::SynthBass2,
-            //    90 => Program::Pad3,
-            //    28 => Program::ElectricGuitarMuted,
-            //    27 => Program::ElectricGuitarClean,
-            //    61 => Program::BrassSection,
-            //    48 => Program::StringEnsemble1,
-            //    82 => Program::Lead3,
-            //    53 => Program::VoiceOohs,
-            //    65 => Program::AltoSax,
-            //    5  => Program::ElectricPiano2,
-            //    49 => Program::StringEnsemble2,
-            //    7 => Program::Clavinet,
-            //    63 => Program::SynthBrass2,
-            //    88 => Program::Pad1,
-            //    62 => Program::SynthBrass1,
-            //    50 => Program::SynthStrings1,
-            //    35 => Program::FretlessBass,
-            //    80 => Program::Lead1,
-            //    17 => Program::PercussiveOrgan,
-            //    55 => Program::OrchestraHit,
-            //    51 => Program::SynthStrings2,
-            //    18 => Program::RockOrgan,
-            //    81 => Program::Lead2,
-            //    56 => Program::Trumpet,
-            //    52 => Program::ChoirAahs,
-            //    42 => Program::Viola,
-            //    70 => Program::Bassoon,
-            //    60 => Program::FrenchHorn,
-            //    57 => Program::Trombone,
-            //    47 => Program::Timpani,
-            //    71 => Program::Clarinet,
-            //    46 => Program::OrchestralHarp,
-            //    73 => Program::Piccolo,
-            //    _ => Program::AcousticGrandPiano,
-            //    //_ => todo!("{}", program_data[0])
-            //})
         },
         0b1110 => { // Pitch Wheel Change
             let mut pitch_change_data = [0];
-            reader.read(&mut pitch_change_data).ok()?;
+            read_bytes(reader,&mut pitch_change_data)?;
             let pitch = ((pitch_change_data[0] as u32) << 7) | (first_byte as u32);
             MidiEvent::PitchWheelChange(pitch)
         }
         0b1001 => { // Note On
             let mut note_data = [0];
-            reader.read(&mut note_data).ok()?;
+            read_bytes(reader,&mut note_data)?;
             MidiEvent::NoteOn { key: first_byte, velocity: note_data[0] }
         }
-        0b1000 => {
+        0b1000 => { // Note Off
             let mut note_data = [0];
-            reader.read(&mut note_data).ok()?;
+            read_bytes(reader,&mut note_data)?;
             MidiEvent::NoteOff { key: first_byte, velocity: note_data[0] }
         }
         _ => todo!("Midi type: {:b}", midi_event_type)
     })
 }
 
-fn read_event(reader: &mut impl Read, last_status: &mut u8) -> Option<(u32, Event)> {
+fn get_utf8(data: &Vec<u8>) -> Result<String,MidiError> {
+    let name_str = str::from_utf8(data).map_err(|x| MidiError { message: x.to_string(), error_type: MidiErrorType::InvalidMidi })?;
+    Ok(name_str.to_string())
+}
+
+fn read_event(reader: &mut impl Read, last_status: &mut u8) -> Result<(u32, Event), MidiError> {
     let dt = read_vlq(reader)?;
-    Some((dt, {
+    Ok((dt, {
         let mut data = [0];
-        reader.read(&mut data).ok()?;
+        read_bytes(reader, &mut data)?;
         let signal = data[0];
         if signal == 0xFF { // META EVENT
-            reader.read(&mut data).ok()?;
+            read_bytes(reader, &mut data)?;
             let meta_type = data[0];
             let length = read_vlq(reader)?; // This should always work though the documentation is unclear
             Event::Meta(match meta_type {
                 0x03 => { // Sequence/Track Name
                     let mut name_data = vec![0; length as usize];
-                    reader.read(&mut name_data[..]).ok()?;
-                    let name_str = std::str::from_utf8(&name_data).ok()?;
-                    MetaEvent::SequenceTrackName { text: name_str.to_string() }
+                    read_bytes(reader, &mut name_data)?;
+                    let name_str = get_utf8(&name_data)?;
+                    MetaEvent::SequenceTrackName { text: name_str }
 
                 }
                 0x51 => { // Set Tempo
                     assert!(length == 3);
                     let mut tempo_data = vec![0;3];
-                    reader.read(&mut tempo_data).ok()?;
+                    read_bytes(reader, &mut tempo_data)?;
                     tempo_data.insert(0,0);
                     let tempo = u32::from_be_bytes(tempo_data.try_into().unwrap());
                     MetaEvent::SetTempo { tempo }
@@ -303,7 +233,7 @@ fn read_event(reader: &mut impl Read, last_status: &mut u8) -> Option<(u32, Even
                 0x58 => { // Time Signature
                     assert!(length == 4);
                     let mut time_sig_data = [0;4];
-                    reader.read(&mut time_sig_data).ok()?;
+                    read_bytes(reader, &mut time_sig_data)?;
                     let denominator = time_sig_data[0];
                     let numerator = 2_u8.pow(time_sig_data[1] as u32);
                     let metronome_clocks = time_sig_data[2];
@@ -312,18 +242,16 @@ fn read_event(reader: &mut impl Read, last_status: &mut u8) -> Option<(u32, Even
                 }
                 0x01 => { // Text
                     let mut text_data = vec![0; length as usize];
-                    reader.read(&mut text_data[..]).ok()?;
-                    let text_str = std::str::from_utf8(&text_data).ok()?;
-                    MetaEvent::Text { text: text_str.to_string() }
+                    read_bytes(reader, &mut text_data[..])?;
+                    let text_str = get_utf8(&text_data)?;
+                    MetaEvent::Text { text: text_str }
                 },
                 0x2F => {
-                    let mut end_data = [0];
-                    reader.read(&mut end_data).ok()?;
                     MetaEvent::EndOfTrack
                 }
-                _ => {
+                _ => { // Unknown/Not implemented
                     let mut unknown_data = vec![0; length as usize];
-                    reader.read(&mut unknown_data).ok()?;
+                    read_bytes(reader, &mut unknown_data)?;
                     println!("Unknown Meta Event: {:X}", meta_type);
                     MetaEvent::Unknown
                 }
@@ -334,7 +262,7 @@ fn read_event(reader: &mut impl Read, last_status: &mut u8) -> Option<(u32, Even
                 0xF0 => {
                     let mut ignored_data = [0];
                     loop {
-                        if reader.read(&mut ignored_data).ok()? == 0 { return None };
+                        read_bytes(reader, &mut ignored_data)?;
                         if ignored_data[0] == 0b11110111 {
                             break;
                         }
@@ -347,60 +275,47 @@ fn read_event(reader: &mut impl Read, last_status: &mut u8) -> Option<(u32, Even
             let midi_event_type = signal >> 4;
             let channel = signal & 0xF;
             let mut first_byte_data = [0];
-            reader.read(&mut first_byte_data).ok()?;
+            read_bytes(reader, &mut first_byte_data)?;
             *last_status = signal;
             Event::Midi(channel, read_midi_event(reader, midi_event_type, first_byte_data[0])?)
-        } else {
+        } else { // Signal Byte was omitted
             let midi_event_type = *last_status >> 4;
-            //if midi_event_type == 0 {
-            //    println!("Last status: {:b}, current status: {:b}", *last_status, signal);
-            //}
             let channel = *last_status & 0xF;
             Event::Midi(channel, read_midi_event(reader, midi_event_type, signal)?)
         }
     }))
 }
 
-fn read_chunk(reader: &mut impl Read) -> Chunk {
-    //println!("==== Chunk ====");
+fn read_chunk(reader: &mut impl Read) -> Result<Chunk, MidiError> {
     let mut name_bytes = [0_u8;4];
-    let bytes = reader.read(&mut name_bytes).unwrap();
-    if bytes == 0 {
-        return Chunk::None;
-    }
+    read_bytes(reader,&mut name_bytes)?;
 
     let mut name = None;
     if let Ok(s) = str::from_utf8(&name_bytes) {
         name = Some(String::from(s));
     };
-    
-    
 
     let mut length_bytes = [0_u8;4];
-    reader.read(&mut length_bytes).unwrap();
+    read_bytes(reader, &mut length_bytes)?;
     let length = u32::from_be_bytes(length_bytes);
-
-    //println!("Length: {}", length);
     
-    match name {
+    Ok(match name {
         Some(s) if s == "MThd" => {
-            //println!("HEADER CHUNK!");
             assert!(length == 6);
             let mut data = [0_u8;2];
-            reader.read(&mut data).unwrap();
+            read_bytes(reader,&mut data)?;
             let format = match u16::from_be_bytes(data.clone()) {
-                0 => Format::SingleTrack,
-                1 => Format::SimulTrack,
-                2 => Format::SequenceTrack,
+                0 => Ok(Format::SingleTrack),
+                1 => Ok(Format::SimulTrack),
+                2 => Ok(Format::SequenceTrack),
                 x => {
-                    eprintln!("Unknown format {}", x);
-                    return Chunk::None
+                    Err(MidiError { message: format!("Unknown midi format {}", x), error_type: MidiErrorType::InvalidMidi })
                 }
-            };
+            }?;
 
-            reader.read(&mut data).unwrap();
+            read_bytes(reader,&mut data)?;
             let ntrks = u16::from_be_bytes(data.clone()) as u32;
-            reader.read(&mut data).unwrap();
+            read_bytes(reader,&mut data)?;
             let division = if data[0] >> 7 == 0 {
                 Division::TicksPerQuarter(u16::from_be_bytes(data) as u32)
             } else {
@@ -412,15 +327,21 @@ fn read_chunk(reader: &mut impl Read) -> Chunk {
             Chunk::Header(HeaderChunk { format, ntrks, division })
         },
         Some(s) if s == "MTrk"=> {
-            //println!("TRACK CHUNK!");
             let mut content = vec![0;length as usize];
             reader.read(&mut content).unwrap();
             let mut track_reader = content.as_slice();
             let mut events = vec![];
             let mut stored_signal = 0;
-            while let Some(event) = read_event(&mut track_reader, &mut stored_signal) {
-                //println!("Event: {:?}", &event);
-                events.push(event);
+            loop {
+                let event = read_event(&mut track_reader, &mut stored_signal)?;
+                if let (_,Event::Meta(MetaEvent::EndOfTrack)) = event {
+                    events.push(event);
+                    break;
+                } else {
+                    events.push(event);
+                }
+                
+                
             }
             Chunk::Track(TrackChunk { events } )
         },
@@ -430,7 +351,7 @@ fn read_chunk(reader: &mut impl Read) -> Chunk {
             reader.read(&mut content).unwrap();
             Chunk::Unknown
         }
-    }
+    })
 }
 
 #[derive(Clone)]
@@ -440,21 +361,22 @@ struct MidiFile {
 }
 
 impl MidiFile {
-    fn read_midi(file_path: &str) -> io::Result<Self> {
-        let mut file = File::open(file_path).unwrap();
-        let header_chunk = read_chunk(&mut file);
+    fn read_midi(file_path: &str) -> Result<Self,MidiError> {
+        let mut file = File::open(file_path).map_err(|e|
+            MidiError { message: e.to_string(), error_type: MidiErrorType::IO }
+        )?;
+        let header_chunk = read_chunk(&mut file)?;
         if let Chunk::Header(header) = header_chunk {
-            //println!("{:?}", header);
             let mut tracks = vec![];
             for _ in 0..header.ntrks {
-                let next_chunk = read_chunk(&mut file);
+                let next_chunk = read_chunk(&mut file)?;
                 if let Chunk::Track(track) = next_chunk {
                     tracks.push(track);
                 }
             }
             Ok(Self { header, tracks })
         } else {
-            return Err(io::Error::new(io::ErrorKind::Other, "Midi file has to start with header"));
+            Err(MidiError { message: String::from("A midi file has to start with a header chunk"), error_type: MidiErrorType::InvalidMidi })
         }
     }
 
@@ -466,6 +388,7 @@ impl MidiFile {
         }
     }
 }
+
 const NOTE_FREQUENCIES: [f64;128] = [8.175798915643682, 
     8.661957218027228,
     9.17702399741896,
@@ -650,15 +573,6 @@ fn draw_keyboard(d: &mut impl RaylibDraw, bounds: Rectangle, key_map: [Option<Co
     }
 }
 
-//fn get_ticks_per_frame(fps: u32, tempo: u32, ticks_per_quarter: u32) -> u32 { // TEMPO IN USECS
-//    (ticks_per_quarter as f32 / (tempo as f32 * 1.0e-6) / (fps as f32)) as u32
-//}
-
-//fn get_tick_time(ticks: u32, tempo: u32, ticks_per_quarter: u32) -> u32 {
-//    (tempo as u64 * ticks as u64 / ticks_per_quarter as u64) as u32
-//}
-
-
 use hound;
 use std::f64::consts::PI;
 use std::i16;
@@ -673,7 +587,7 @@ fn note_sine(t: f64, note: usize) -> f64 {
 fn note_square(t: f64, note: usize) -> f64 {
     let period_length = 1.0;
     let period_progress = t*NOTE_FREQUENCIES[note] % period_length;
-    //println!("t={},period_length={},period_progress={}",t,period_length,period_progress);
+
     const DEFAULT_VOLUME: f64 = 0.25;
     if period_progress >= period_length / 2.0 {
         DEFAULT_VOLUME
@@ -694,7 +608,6 @@ fn note_drum(t: f64, _: usize) -> f64 {
 fn note_saw_tooth(t: f64, note: usize) -> f64 {
     let period_length = 1.0;
     let period_progress = t*NOTE_FREQUENCIES[note] % period_length;
-    //println!("t={},period_length={},period_progress={}",t,period_length,period_progress);
     (period_progress / period_length * 2.0 - 1.0) * 0.25
 }
 
@@ -706,15 +619,12 @@ struct PressedKeyInfo {
     velocity: u8,
 }
 
-
-
 #[derive(Debug,Clone)]
 enum NormalizedEvent {
     KeyOn { key: u8, program: u8, channel: u8 },
     KeyOff { key: u8, program: u8, channel: u8 }
 }
 
-// Store events with time in seconds
 #[derive(Debug, Clone)]
 struct NormalizedTrack {
     events: Vec<(f64, NormalizedEvent)>,
@@ -726,10 +636,7 @@ impl NormalizedTrack {
     }
 }
 
-//const DEFAULT_TRACK: usize = 0;
-
 use std::thread;
-//use std::sync::mpsc;
 use std::sync::Mutex;
 
 #[derive(Clone, Debug)]
@@ -753,12 +660,6 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
         sample_format: hound::SampleFormat::Int
     };
     let mut writer = hound::WavWriter::create(wav_file_path, spec).unwrap();
-    //for t in (0 .. 44100).map(|x| x as f32 / 44100.0) {
-    //    let sample = (t * 440.0 * 2.0 * PI).sin();
-    //    let amplitude = i16::MAX as f32;
-    //    writer.write_sample((sample * amplitude) as i16).unwrap();
-    //}
-    
 
     let simult_tracks: usize = file.get_simult_track_count();
 
@@ -781,8 +682,7 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
             let mut pi = progress_info.lock().unwrap();
             pi.track = track;
         }
-        //let track = DEFAULT_TRACK;
-        let mut channels = [(0,127);256]; // (Program, Volume)
+        let mut channels = [(0,127);256];
         let mut pressed_keys = Vec::<PressedKeyInfo>::new();
         let mut sample_pointer = 0;
 
@@ -797,12 +697,11 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
                 let mut pi = progress_info.lock().unwrap();
                 pi.track_progress = event_index as f64 / file.tracks[track].events.len() as f64;
             }
-            //let elapsing_samples = usec_per_tick as u64 * *dt as u64 * spec.sample_rate as u64 / 1_000_000;
+            
             let sec_per_sample = 1.0 / spec.sample_rate as f64;
             let mut dt_float = *dt as f64;
             let mut tick_per_sample = 1_000_000.0 as f64 / usec_per_tick as f64 / spec.sample_rate as f64;
 
-            //for _ in 0..elapsing_samples {
             while dt_float > tick_per_sample {
                 dt_float -= tick_per_sample;
                 let mut s = 0.0;
@@ -843,33 +742,11 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
                         } else {
                             unreachable!()
                         };
-                        //    //Program::AcousticGrandPiano => note_sine(*t,i),
-                        //    Program::StringEnsemble2
-                        //        | Program::StringEnsemble1
-                        //        | Program::SynthStrings1
-                        //        | Program::SynthStrings2
-                        //        | Program::Lead1
-                        //        | Program::BrassSection
-                        //        | Program::SynthBrass1
-                        //        | Program::SynthBrass2
-                        //        => note_square,
-                        //    Program::SynthDrum
-                        //        | Program::Pad1
-                        //        | Program::Pad3
-                        //        | Program::OrchestraHit
-                        //        => note_drum,
-                        //    Program::SynthBass2
-                        //        | Program::FretlessBass
-                        //        | Program::AltoSax
-                        //        | Program::Lead2
-                        //        => note_saw_tooth,
-                        //    _ => note_sine
-                        //};
+                        
                         s += note_function(key_info.elapsed_time, key_info.key as usize) * channels[key_info.channel as usize].1 as f64 / 127.0 * key_info.velocity as f64 / 127.0;
                         key_info.elapsed_time += sec_per_sample;
                 }
-                s /= 10.0; //pressed_keys.len() as f64;
-                //writer.write_sample((i16::MAX as f64 * s) as i16).unwrap();
+                s /= 10.0;
                 if s.abs() >= 1.0 {
                     s = s / s.abs();
                 }
@@ -904,9 +781,7 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
                     } else {
                         todo!("Other divisions")
                     };
-                    //assert!(track==0);
                     tempo_changes.push((sample_pointer, usec_per_tick));
-                    //println!("TEMPO CHANGE");
                 },
                 Event::Midi(c,MidiEvent::NoteOff { key, .. }) | Event::Midi(c, MidiEvent::NoteOn { key, velocity: 0 }) => {
                     for i in 0..pressed_keys.len() {
@@ -918,10 +793,7 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
                     noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOff { key: *key, program: channels[*c as usize].0, channel: *c }));
                 },
                 Event::Midi(c,MidiEvent::NoteOn { key, velocity }) => {
-                    //if *c == channel {
-                        pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key, velocity: *velocity });
-                      // println!("HHHHHHSDHFSDFSD?????");
-                    //}
+                    pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key, velocity: *velocity });
                     noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOn { key: *key, program: channels[*c as usize].0, channel: *c }));
                 }
                 
@@ -935,7 +807,7 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
             }
         }
     }
-    //println!("END_OF_GENERATION");
+
     for s in sample_buffer {
         writer.write_sample(s).unwrap();
     }
@@ -945,11 +817,8 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
     pi.result = Some(noramalized_tracks);
 }
 
-
 use raylib::core::audio::Music;
 use raylib::core::audio::RaylibAudio;
-
-//const LISTEN_CHANNEL: u8 = 8;
 
 const COLORS: [Color; 8] = [
     Color::GREEN,
@@ -961,18 +830,6 @@ const COLORS: [Color; 8] = [
     Color::YELLOW,
     Color::SKYBLUE
 ];
-
-//#[derive(Debug,Clone,Copy)]
-//struct TrackPlayer {
-//    event_pointer: usize,
-//    dt_counter: u32,
-//}
-//
-//impl TrackPlayer {
-//    fn new() -> Self {
-//        Self { event_pointer: 0, dt_counter: 0 }
-//    }
-//}
 
 #[derive(Debug,Clone,Copy)]
 struct TrackPlayer {
@@ -993,14 +850,22 @@ enum State {
     VISUALIZING
 }
 
-fn main() -> std::io::Result<()> {
+fn main() {
     let args = env::args().collect::<Vec<_>>();
     if args.len() < 3 {
         eprintln!("usage: {} [input] [output]", args[0]);
-        return Ok(());
+        return;
     }
 
-    let file =  Arc::new(MidiFile::read_midi(&args[1])?);
+    let file =  Arc::new({
+        match MidiFile::read_midi(&args[1]) {
+            Ok(file) => file,
+            Err(err) => {
+                eprintln!("{}", err);
+                return;
+            }
+        }
+    });
     let wav_file_path = args[2].clone();
 
     let mut state = State::RENDERING;
@@ -1020,61 +885,36 @@ fn main() -> std::io::Result<()> {
 
     set_trace_log(TraceLogLevel::LOG_NONE);
     let (mut rl, thread) = raylib::init().width(WINDOW_WIDTH).height(WINDOW_HEIGHT).title("Mididi").build();
-    let elif_image = Image::load_image("elif.png").unwrap();
-    let elif_texture = rl.load_texture_from_image(&thread, &elif_image).unwrap();
+    
 
     let mut rl_audio = RaylibAudio::init_audio_device();
     let mut music = None;
-    //let mut music = Music::load_music_stream(&thread, &wav_file_path).unwrap();
     
     rl.set_exit_key(None);
     rl.set_target_fps(FPS);
-
-    let mut normed_tracks: Option<Vec<NormalizedTrack>> = None;
     
-    
-    //let mut tempo = STANDARD_TEMPO;
-
-    //let mut ticks_per_frame = if let Division::TicksPerQuarter(ticks) = file.header.division {
-    //    get_ticks_per_frame(FPS, tempo, ticks)
-    //} else {
-    //    todo!("Other divisions")
-    //};
-    //let ticks_per_quarter = if let Division::TicksPerQuarter(ticks) = file.header.division {
-    //    ticks
-    //} else {
-    //    todo!("Other divisions")
-    //};
     let simult_tracks = file.get_simult_track_count(); 
     let mut track_players = vec![TrackPlayer::new(); simult_tracks as usize];
     
     let mut key_map  = [None; 128];
-    //let mut progress_info = ProgressInfo { track: 0, track_progress: 0.0, result: None };
-    
-    
     
     while !rl.window_should_close() {
-        //queue_timer += 30;
-        //if queue_timer > queue_pop_time && event_queue.len() > 0 {
-        //    event_queue.pop_back();
-        //    queue_timer = 0;
-        //}
         match state {
-        //rl_audio.update_music_stream(&mut music);
             State::VISUALIZING => {
-                let unwrapped_music = music.as_mut().unwrap();
-                let unwrapped_normed_tracks = normed_tracks.as_ref().unwrap();
-                rl_audio.update_music_stream(unwrapped_music);
-                let elapsed_time = rl_audio.get_music_time_played(unwrapped_music) as f64;
-                //let dt = rl.get_frame_time() as f64;
+                let pi = progress_info.lock().unwrap();
+                let music = music.as_mut().unwrap();
+                let normed_tracks = pi.result.as_ref().unwrap();
+
+                rl_audio.update_music_stream(music);
+                let elapsed_time = rl_audio.get_music_time_played(music) as f64;
                 'outer: for (i, player) in track_players.iter_mut().enumerate() {
                     
-                    if player.event_pointer >= unwrapped_normed_tracks[i].events.len() {
+                    if player.event_pointer >= normed_tracks[i].events.len() {
                         continue 'outer;
                     }
 
-                    while elapsed_time > unwrapped_normed_tracks[i].events[player.event_pointer].0 {
-                        match unwrapped_normed_tracks[i].events[player.event_pointer].1 {
+                    while elapsed_time > normed_tracks[i].events[player.event_pointer].0 {
+                        match normed_tracks[i].events[player.event_pointer].1 {
                             NormalizedEvent::KeyOff { key, .. } => {
                                 key_map[key as usize] = None;
                             },
@@ -1083,7 +923,7 @@ fn main() -> std::io::Result<()> {
                             },
                         }
                         player.event_pointer += 1;
-                        if player.event_pointer >= unwrapped_normed_tracks[i].events.len() {
+                        if player.event_pointer >= normed_tracks[i].events.len() {
                             continue 'outer;
                         }
                     
@@ -1098,29 +938,14 @@ fn main() -> std::io::Result<()> {
         
                 let mut d = rl.begin_drawing(&thread);
                 d.clear_background(Color::BLACK);
-                //d.draw_text("Hello World", 23, 23, 23, Color::RAYWHITE);
-                d.draw_texture_ex(&elif_texture, Vector2::new(-224.0,-379.0), 0.0, 4.0, Color::WHITE);
+                
                 let key_board_bounds = Rectangle::new(0.0, WINDOW_HEIGHT as f32 * 7.0/8.0, WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32 / 8.0);
                 draw_keyboard(&mut d, key_board_bounds, key_map);
             },
             State::RENDERING => {
-                
-                //match receiver.recv_timeout(std::time::Duration::from_secs_f64(1.0 / FPS as f64)) {
-                //    Ok(ProgressInfo { result: Some(ntracks), .. }) => {
-                //        normed_tracks = Some(ntracks);
-                //        state = State::VISUALIZING;
-                //        music = Some(Music::load_music_stream(&thread, &wav_file_path).unwrap());
-                //        rl_audio.play_music_stream(&mut music.as_mut().unwrap());
-                //    },
-                //    Ok(info) => {
-                //        progress_info = info;
-                //    },
-                //    _ => {}
-                //}
                 {
                     let pi = progress_info.lock().unwrap();
-                    if let Some(tracks) = &pi.result {
-                        normed_tracks = Some(tracks.clone());
+                    if let Some(_) = &pi.result {
                         state = State::VISUALIZING;
                         music = Some(Music::load_music_stream(&thread, &wav_file_path).unwrap());
                         rl_audio.play_music_stream(&mut music.as_mut().unwrap());
@@ -1143,49 +968,5 @@ fn main() -> std::io::Result<()> {
                 }
             }
         }
-        //let dt = rl.get_frame_time();
-        //for (i,player) in track_players.iter_mut().enumerate() {
-        //    //if i != DEFAULT_TRACK { continue; }
-        //    player.dt_counter += (dt * 1.0e6) as u32;
-        //    while player.event_pointer < file.tracks[i].events.len() {
-        //        let (dt, event) = &file.tracks[i].events[player.event_pointer];
-        //        let dt_time = get_tick_time(*dt, tempo, ticks_per_quarter);
-        //        if player.dt_counter < dt_time { break; }
-        //        match *event {
-        //            Event::Meta(MetaEvent::SetTempo { tempo: t }) => {
-        //                tempo = t;
-        //                println!("TEMPO CHANGE");
-        //            },
-        //            //Event::Midi(channel,MidiEvent::ProgramChange(program)) => {
-        //            //    //if channel == LISTEN_CHANNEL {
-        //            //    //    println!("Program for channel {}: {:?}", channel, program);
-        //            //    //}
-        //            //}
-        //            Event::Midi(channel,MidiEvent::NoteOn { key, ..}) => {
-        //                
-        //                key_map[key as usize] = Some(COLORS[channel as usize % COLORS.len() ]);
-        //            }
-        //            Event::Midi(_, MidiEvent::NoteOff { key, ..}) => {
-        //                key_map[key as usize] = None;
-        //            }
-        //            _ => {}
-        //        }
-        //        
-        //        
-        //        //event_queue.push_front(event.clone());
-        //        player.dt_counter -= dt_time;
-        //        player.event_pointer += 1;
-        //    }
-        //}
-        //dt_counter = 0;
-        
-        
-        
-        //for (i,event) in event_queue.iter().enumerate() {
-        //    d.draw_text(&format!("{:?}", event), 23, 23 + i as i32 * 40, 23, Color::WHITE);
-        //}
     }
-
-    Ok(())
-    
 }
