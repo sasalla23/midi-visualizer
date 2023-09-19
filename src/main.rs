@@ -639,16 +639,17 @@ impl NormalizedTrack {
 use std::thread;
 use std::sync::Mutex;
 
-#[derive(Clone, Debug)]
+#[derive(Clone,Debug)]
 struct ProgressInfo {
     track: usize,
     track_progress: f64,
     result: Option<Vec<NormalizedTrack>>,
+    error: Option<MidiError>,
 }
 
 impl ProgressInfo {
     fn new() -> Self {
-        Self { track: 0, track_progress: 0.0, result: None }
+        Self { track: 0, track_progress: 0.0, result: None, error: None }
     }
 }
 
@@ -675,7 +676,7 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
         todo!("Other divisions")
     };
 
-    let mut noramalized_tracks = vec![NormalizedTrack::new(); simult_tracks];
+    let mut normalized_tracks = vec![NormalizedTrack::new(); simult_tracks];
 
     for track in 0..simult_tracks {
         {
@@ -790,11 +791,11 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
                             break;
                         }
                     }
-                    noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOff { key: *key, program: channels[*c as usize].0, channel: *c }));
+                    normalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOff { key: *key, program: channels[*c as usize].0, channel: *c }));
                 },
                 Event::Midi(c,MidiEvent::NoteOn { key, velocity }) => {
                     pressed_keys.push(PressedKeyInfo { elapsed_time: 0.0, channel: *c, key: *key, velocity: *velocity });
-                    noramalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOn { key: *key, program: channels[*c as usize].0, channel: *c }));
+                    normalized_tracks[track].events.push((sample_pointer as f64 * sec_per_sample, NormalizedEvent::KeyOn { key: *key, program: channels[*c as usize].0, channel: *c }));
                 }
                 
                 Event::Midi(c, MidiEvent::ControlChange(ControllerMessage::ChannelVolumeMSB(new_volume))) => {
@@ -809,12 +810,21 @@ fn generate_audio(file: Arc<MidiFile>, wav_file_path: &str, progress_info: Arc<M
     }
 
     for s in sample_buffer {
-        writer.write_sample(s).unwrap();
+        if let Err(e) = writer.write_sample(s) {
+            let mut pi = progress_info.lock().unwrap();
+            pi.error = Some(MidiError { message: e.to_string(), error_type: MidiErrorType::IO });
+            return;
+        }
     }
-    writer.finalize().unwrap();
+
+    if let Err(e) = writer.finalize() {
+        let mut pi = progress_info.lock().unwrap();
+        pi.error = Some(MidiError { message: e.to_string(), error_type: MidiErrorType::IO });
+        return;
+    }
 
     let mut pi = progress_info.lock().unwrap();
-    pi.result = Some(noramalized_tracks);
+    pi.result = Some(normalized_tracks);
 }
 
 use raylib::core::audio::Music;
@@ -945,9 +955,23 @@ fn main() {
             State::RENDERING => {
                 {
                     let pi = progress_info.lock().unwrap();
+
+                    if let Some(err) = &pi.error {
+                        eprintln!("{}", err);
+                        return;
+                    }
+
                     if let Some(_) = &pi.result {
                         state = State::VISUALIZING;
-                        music = Some(Music::load_music_stream(&thread, &wav_file_path).unwrap());
+                        music = Some({
+                            match Music::load_music_stream(&thread, &wav_file_path) {
+                                Ok(m) => m,
+                                Err(err) => {
+                                    eprintln!("IOError: Failed to reload the generated audio {}: {}", &wav_file_path, err);
+                                    return;
+                                }
+                            }
+                        });
                         rl_audio.play_music_stream(&mut music.as_mut().unwrap());
                     }
                 }

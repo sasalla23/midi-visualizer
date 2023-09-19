@@ -17,5 +17,5 @@
 - [x] Show rendering progress before starting the visualization
 
 ## Other
-- [ ] Better Error handling
+- [x] Better Error handling
 - [ ] Modules
