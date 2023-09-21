@@ -16,7 +16,7 @@
 - [ ] VFX
 - [ ] Properly choose colors (Maybe via user input)
 - [x] Show rendering progress before starting the visualization
-- [ ] Make the window resizable
+- [x] Make the window resizable
 
 ## Other
 - [x] Better Error handling

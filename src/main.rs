@@ -887,26 +887,34 @@ struct NoteVisual {
     stop_time: Option<f64>
 }
 
-const TIME_SCALE: f64 = 100.0; // PIXEL / SECOND
+const TIME_OFFSET: f64 = 3.0;
+fn compute_keyboard_bounds(rl: &RaylibHandle) -> Rectangle {
+    Rectangle::new(0.0, rl.get_screen_height() as f32 * 7.0/8.0, rl.get_screen_width() as f32, rl.get_screen_height() as f32 / 8.0)
+}
+
+fn compute_time_scale(rl: &RaylibHandle) -> f64 {
+    (rl.get_screen_height() as f64 * 7.0 / 8.0) / TIME_OFFSET
+}
 
 impl NoteVisual {
     fn new(channel: u8, key: u8, track: usize, start_time: f64) -> Self { 
         Self { channel, key, track, stop_time: None, start_time }
     }
 
-    fn get_rect(&self, curr_time: f64, keyboard_bounds: Rectangle) -> Rectangle {
+    fn get_rect(&self, rl: &RaylibHandle, curr_time: f64, keyboard_bounds: Rectangle) -> Rectangle {
         let keyboard_key_rect = key_rect(self.key, keyboard_bounds);
+        let time_scale = compute_time_scale(rl);
         let start_y = match self.stop_time {
-            Some(t) => (curr_time - t) * TIME_SCALE,
+            Some(t) => (curr_time - t) * time_scale,
             None => 0.0
         };
-        let end_y = (curr_time - self.start_time) * TIME_SCALE;
+        let end_y = (curr_time - self.start_time) * time_scale;
         Rectangle::new(keyboard_key_rect.x, start_y as f32, keyboard_key_rect.width, (end_y - start_y) as f32)
     }
 
-    fn render(&self, curr_time: f64, d: &mut impl RaylibDraw, keyboard_bounds: Rectangle) {
+    fn render(&self, curr_time: f64, d: &mut RaylibDrawHandle, keyboard_bounds: Rectangle) {
         let color = get_color(self.channel);
-        d.draw_rectangle_rec(self.get_rect(curr_time, keyboard_bounds), color);
+        d.draw_rectangle_rec(self.get_rect(d, curr_time, keyboard_bounds), color);
     }
 }
 
@@ -922,7 +930,7 @@ fn update_track_players(track_players: &mut Vec<TrackPlayer>, normed_tracks: &Ve
                 NormalizedEvent::KeyOff { key, channel, .. } => {
                     //key_map[key as usize] = None;
                     for nv in note_visuals.iter_mut() {
-                        if nv.channel == channel && nv.key == key && nv.stop_time.is_none() {
+                        if nv.track == i && nv.channel == channel && nv.key == key && nv.stop_time.is_none() {
                             nv.stop_time = Some(elapsed_time);
                             break;
                         }
@@ -943,6 +951,9 @@ fn update_track_players(track_players: &mut Vec<TrackPlayer>, normed_tracks: &Ve
         
     }
 }
+
+
+
 
 fn main() {
     let args = env::args().collect::<Vec<_>>();
@@ -978,7 +989,7 @@ fn main() {
 
 
     set_trace_log(TraceLogLevel::LOG_NONE);
-    let (mut rl, thread) = raylib::init().width(WINDOW_WIDTH).height(WINDOW_HEIGHT).title("Mididi").build();
+    let (mut rl, thread) = raylib::init().width(WINDOW_WIDTH).height(WINDOW_HEIGHT).title("Mididi").resizable().build();
     
 
     let mut rl_audio = RaylibAudio::init_audio_device();
@@ -992,10 +1003,12 @@ fn main() {
     
     let mut key_map  = [None; 128];
     let mut note_visuals: Vec<NoteVisual> = Vec::new();
-    let key_board_bounds = Rectangle::new(0.0, WINDOW_HEIGHT as f32 * 7.0/8.0, WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32 / 8.0);
-    let time_offset: f64 = (WINDOW_HEIGHT as f64 - key_board_bounds.height as f64) / TIME_SCALE;
-    println!("TIME OFFSET: {}", time_offset);
+    let mut key_board_bounds = compute_keyboard_bounds(&rl);
+    //println!("TIME OFFSET: {}", time_offset);
     while !rl.window_should_close() {
+        if rl.is_window_resized() {
+            key_board_bounds = compute_keyboard_bounds(&rl);
+        }
         match state {
             State::VISUALIZING => {
                 
@@ -1003,9 +1016,10 @@ fn main() {
                 let music = music.as_mut().unwrap();
                 let normed_tracks = pi.result.as_ref().unwrap();
                 
+                
 
                 rl_audio.update_music_stream(music);
-                let elapsed_time = rl_audio.get_music_time_played(music) as f64 + time_offset;
+                let elapsed_time = rl_audio.get_music_time_played(music) as f64 + TIME_OFFSET;
                 
                 update_track_players(&mut track_players, &normed_tracks, elapsed_time, &mut note_visuals);
                 
@@ -1013,7 +1027,7 @@ fn main() {
                 for i in 0..initial_note_visual_count {
                     let index = initial_note_visual_count-(i+1);
                     let nv = &note_visuals[index];
-                    let nv_rect = nv.get_rect(elapsed_time, key_board_bounds);
+                    let nv_rect = nv.get_rect(&rl, elapsed_time, key_board_bounds);
                     if nv_rect.check_collision_recs(&key_rect(nv.key, key_board_bounds)) {
                         key_map[nv.key as usize] = Some(get_color(nv.channel));
                     }
@@ -1057,7 +1071,7 @@ fn main() {
                             }
                         });
                         rl_audio.play_music_stream(&mut music.as_mut().unwrap());
-                        let frames = (time_offset * FPS as f64) as usize;
+                        let frames = (TIME_OFFSET * FPS as f64) as usize;
                         for frame in 0..frames {
                             update_track_players(&mut track_players, normed_tracks, frame as f64 / FPS as f64, &mut note_visuals);
                         }
@@ -1073,7 +1087,7 @@ fn main() {
                 {
                     let pi = progress_info.lock().unwrap();
                     d.draw_text(&format!("Track: {}/{}, Progress: {}", pi.track, file.header.ntrks, pi.track_progress), 23, 23, 23, Color::WHITE);
-                    let mut progress_rect = Rectangle::new(WINDOW_WIDTH as f32 / 2.0 - PROGRESS_RECT_WIDTH / 2.0, WINDOW_HEIGHT as f32 / 2.0 - PROGRESS_RECT_HEIGHT / 2.0, PROGRESS_RECT_WIDTH, PROGRESS_RECT_HEIGHT);
+                    let mut progress_rect = Rectangle::new(d.get_screen_width() as f32 / 2.0 - PROGRESS_RECT_WIDTH / 2.0, d.get_screen_height() as f32 / 2.0 - PROGRESS_RECT_HEIGHT / 2.0, PROGRESS_RECT_WIDTH, PROGRESS_RECT_HEIGHT);
                     d.draw_rectangle_rec(progress_rect, Color::GRAY);
                     progress_rect.width *= pi.track_progress as f32;
                     d.draw_rectangle_rec(progress_rect, Color::GREEN);
