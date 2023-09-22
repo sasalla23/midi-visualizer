@@ -884,7 +884,8 @@ struct NoteVisual {
     key: u8,
     track: usize,
     start_time: f64,
-    stop_time: Option<f64>
+    stop_time: Option<f64>,
+    rect: Option<Rectangle>,
 }
 
 const TIME_OFFSET: f64 = 3.0;
@@ -898,7 +899,7 @@ fn compute_time_scale(rl: &RaylibHandle) -> f64 {
 
 impl NoteVisual {
     fn new(channel: u8, key: u8, track: usize, start_time: f64) -> Self { 
-        Self { channel, key, track, stop_time: None, start_time }
+        Self { channel, key, track, stop_time: None, start_time, rect: None }
     }
 
     fn get_rect(&self, rl: &RaylibHandle, curr_time: f64, keyboard_bounds: Rectangle) -> Rectangle {
@@ -912,9 +913,26 @@ impl NoteVisual {
         Rectangle::new(keyboard_key_rect.x, start_y as f32, keyboard_key_rect.width, (end_y - start_y) as f32)
     }
 
-    fn render(&self, curr_time: f64, d: &mut RaylibDrawHandle, keyboard_bounds: Rectangle) {
+    fn render(&mut self, curr_time: f64, d: &mut RaylibDrawHandle, keyboard_bounds: Rectangle) {
         let color = get_color(self.channel);
-        d.draw_rectangle_rec(self.get_rect(d, curr_time, keyboard_bounds), color);
+        let exact_rect = self.get_rect(d, curr_time, keyboard_bounds);
+        const LERP_VALUE: f64 = 0.25;
+        self.rect = match self.rect {
+            None => Some(exact_rect),
+            Some(rect) => Some(
+                Rectangle {
+                    x: exact_rect.x,
+                    //y: if self.stop_time.is_none() { 0.0 } else { lerp(rect.y, exact_rect.y, LERP_VALUE as f32) },
+                    y: lerp(rect.y, exact_rect.y, LERP_VALUE as f32),
+                    width: exact_rect.width,
+                    //height: if self.stop_time.is_none() { lerp(rect.height, exact_rect.height, LERP_VALUE as f32) } else { exact_rect.height },
+                    height: lerp(rect.height, exact_rect.height, LERP_VALUE as f32),
+                }
+                
+            )
+        };
+        //d.draw_rectangle_rec(self.rect.unwrap(), color);
+        d.draw_rectangle_rec(self.rect.unwrap(), color);
     }
 }
 
@@ -1006,6 +1024,7 @@ fn main() {
     let mut key_board_bounds = compute_keyboard_bounds(&rl);
     //println!("TIME OFFSET: {}", time_offset);
     while !rl.window_should_close() {
+        let fps = rl.get_fps();
         if rl.is_window_resized() {
             key_board_bounds = compute_keyboard_bounds(&rl);
         }
@@ -1044,10 +1063,11 @@ fn main() {
                 let mut d = rl.begin_drawing(&thread);
                 d.clear_background(Color::BLACK);
                 
-                for key in note_visuals.iter() {
+                for key in note_visuals.iter_mut() {
                     key.render(elapsed_time, &mut d, key_board_bounds)
                 }
                 draw_keyboard(&mut d, key_board_bounds, key_map);
+                d.draw_text(&format!("{}", fps), 23,23, 23, Color::WHITE);
 
             },
             State::RENDERING => {
@@ -1094,5 +1114,6 @@ fn main() {
                 }
             }
         }
+        
     }
 }
